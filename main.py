@@ -2,10 +2,19 @@ import streamlit as st
 import openai
 from datetime import datetime
 import os
-from key import api_key
 
-# Set the API key
-openai.api_key = api_key
+# --- API KEY HANDLING ---
+# Use st.secrets for the API key instead of importing from key.py
+if "openai_api_key" in st.secrets:
+    api_key = st.secrets["openai_api_key"]
+else:
+    # Fallback for local development without secrets configured
+    st.error("API key not found in secrets. Please configure secrets for deployment.")
+    api_key = None
+
+# Set the API key if available
+if api_key:
+    openai.api_key = api_key
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -60,6 +69,12 @@ st.markdown("""
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("Quality Bot Settings")
+    
+    # API Key Status
+    if api_key:
+        st.success("API Key configured ✅")
+    else:
+        st.warning("API Key not configured ⚠️")
     
     # Model Selection
     model = st.selectbox(
@@ -149,35 +164,39 @@ if submit_button and user_input:
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": user_input})
     
-    # Initialize OpenAI client
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        
-        with st.spinner("Thinking..."):
-            # Create messages array for API
-            messages = [
-                {"role": m["role"], "content": m["content"]} 
-                for m in st.session_state.messages
-            ]
+    # Check if API key is available
+    if not api_key:
+        st.error("API Key not configured. Please set up secrets for this application.")
+    else:
+        # Initialize OpenAI client
+        try:
+            client = openai.OpenAI(api_key=api_key)
             
-            # Call OpenAI API
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            
-            # Extract response content
-            assistant_response = response.choices[0].message.content
-            
-            # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-            
-            # Rerun to update UI
-            st.experimental_rerun()
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+            with st.spinner("Thinking..."):
+                # Create messages array for API
+                messages = [
+                    {"role": m["role"], "content": m["content"]} 
+                    for m in st.session_state.messages
+                ]
+                
+                # Call OpenAI API
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                
+                # Extract response content
+                assistant_response = response.choices[0].message.content
+                
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                
+                # Rerun to update UI
+                st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
 
 # Add sample questions or suggestions
 if len(st.session_state.messages) == 0:
