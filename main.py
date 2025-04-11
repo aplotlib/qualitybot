@@ -1,7 +1,8 @@
 import streamlit as st
-import openai
-from datetime import datetime
 import os
+from datetime import datetime
+import requests
+import json
 
 # --- API KEY HANDLING ---
 # Try to get API key from Streamlit secrets
@@ -14,10 +15,6 @@ except (FileNotFoundError, KeyError):
     # If not found anywhere, show error
     if not api_key:
         st.error("No API key found. Please set up your OpenAI API key in Streamlit secrets or as an environment variable.")
-
-# Set the API key globally for openai module
-if api_key:
-    openai.api_key = api_key
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -68,6 +65,33 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- DIRECT API CALL FUNCTION ---
+def call_openai_api(messages, model, temperature, max_tokens, api_key):
+    """Call OpenAI API directly using requests to avoid client issues"""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
+    
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        data=json.dumps(payload)
+    )
+    
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"]
+    else:
+        error_message = f"API Error: {response.status_code} - {response.text}"
+        raise Exception(error_message)
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -171,13 +195,8 @@ if submit_button and user_input:
     if not api_key:
         st.error("API Key not configured. Please set up secrets for this application.")
     else:
-        # Initialize OpenAI client - FIXED version without proxies
+        # Call OpenAI API directly without using the client library
         try:
-            # Create a simple client without any extra parameters that might cause issues
-            # The global API key set above will be used automatically
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-            
             with st.spinner("Thinking..."):
                 # Create messages array for API
                 messages = [
@@ -185,16 +204,14 @@ if submit_button and user_input:
                     for m in st.session_state.messages
                 ]
                 
-                # Call OpenAI API
-                response = client.chat.completions.create(
-                    model=model,
+                # Direct API call instead of using the client
+                assistant_response = call_openai_api(
                     messages=messages,
+                    model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    api_key=api_key
                 )
-                
-                # Extract response content
-                assistant_response = response.choices[0].message.content
                 
                 # Add assistant response to chat history
                 st.session_state.messages.append({"role": "assistant", "content": assistant_response})
