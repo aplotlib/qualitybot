@@ -4,15 +4,18 @@ from datetime import datetime
 import os
 
 # --- API KEY HANDLING ---
-# Use st.secrets for the API key instead of importing from key.py
-if "openai_api_key" in st.secrets:
+# Try to get API key from Streamlit secrets
+try:
     api_key = st.secrets["openai_api_key"]
-else:
-    # Fallback for local development without secrets configured
-    st.error("API key not found in secrets. Please configure secrets for deployment.")
-    api_key = None
+except (FileNotFoundError, KeyError):
+    # If not found in secrets, use environment variable if available
+    api_key = os.environ.get("OPENAI_API_KEY")
+    
+    # If not found anywhere, show error
+    if not api_key:
+        st.error("No API key found. Please set up your OpenAI API key in Streamlit secrets or as an environment variable.")
 
-# Set the API key if available
+# Set the API key globally for openai module
 if api_key:
     openai.api_key = api_key
 
@@ -168,9 +171,12 @@ if submit_button and user_input:
     if not api_key:
         st.error("API Key not configured. Please set up secrets for this application.")
     else:
-        # Initialize OpenAI client
+        # Initialize OpenAI client - FIXED version without proxies
         try:
-            client = openai.OpenAI(api_key=api_key)
+            # Create a simple client without any extra parameters that might cause issues
+            # The global API key set above will be used automatically
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
             
             with st.spinner("Thinking..."):
                 # Create messages array for API
