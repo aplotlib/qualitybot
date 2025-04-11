@@ -153,7 +153,7 @@ with st.sidebar:
             )
 
     st.markdown("---")
-    st.markdown("Quality Bot by Your Organization")
+    st.markdown("Quality Bot by Vive Quality")
 
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:
