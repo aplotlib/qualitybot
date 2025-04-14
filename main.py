@@ -105,12 +105,12 @@ st.markdown("""
     .stButton > button {
         background-color: #1E88E5;
         color: white;
-        padding: 0.75rem 3rem;
+        padding: 0.25rem 1.75rem;
         font-weight: 600;
         border-radius: 10px;
         border: none;
         width: 100%;
-        height: 3.5rem;
+        height: 1.5rem;
         transition: all 0.3s;
     }
     
