@@ -295,11 +295,8 @@ if "settings" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    # Vive Health Logo
+    
     st.markdown("""
-    <div class="vive-logo">
-        <img src="https://vivehealth.com/cdn/shop/files/vive-health-logo-blue_2x_87baaf23-99f4-4ea2-9b16-1f0a3d36d4c0_180x@2x.png?v=1614382344" alt="Vive Health Logo" width="180">
-    </div>
     """, unsafe_allow_html=True)
     
     st.title("Quality Bot Settings")
