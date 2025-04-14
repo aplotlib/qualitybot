@@ -223,7 +223,7 @@ if submit_button and user_input:
 
 # Add sample questions or suggestions
 if len(st.session_state.messages) == 0:
-    st.info("👋 Hello! Try asking me something like:")
+    st.info("👋 Hello! Please use 4o. Try asking me something like:")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("- How can I improve product quality?")
