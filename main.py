@@ -230,4 +230,4 @@ if len(st.session_state.messages) == 0:
         st.markdown("- What are common quality assurance techniques?")
     with col2:
         st.markdown("- Help me create a QA checklist")
-        st.markdown("- What are ISO 9001 requirements?")
+        st.markdown("- What are ISO 13485 requirements?")
