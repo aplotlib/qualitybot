@@ -305,7 +305,7 @@ with st.sidebar:
     if st.button("New Conversation"):
         if "messages" in st.session_state:
             st.session_state.messages = []
-        st.experimental_rerun()
+        st.rerun()
     
     # Download Conversation
     if "messages" in st.session_state and st.session_state.messages:
@@ -395,7 +395,7 @@ with tab1:
                     st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                     
                     # Rerun to update UI
-                    st.experimental_rerun()
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error: {str(e)}")
     
