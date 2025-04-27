@@ -1,22 +1,17 @@
 import streamlit as st
 import os
 import hashlib
-from datetime import datetime
 import requests
 import json
-import io
-from pathlib import Path
-
-# Try to get API key from Streamlit secrets
-try:
-    api_key = st.secrets["openai_api_key"]
-except (FileNotFoundError, KeyError):
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        st.error("No API key found. Please set up your OpenAI API key.")
+from datetime import datetime
+import pandas as pd
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="质量控制助手 | Quality Control Assistant", page_icon="🔍", layout="wide")
+st.set_page_config(
+    page_title="Quality Control Assistant | 质量控制助手",
+    page_icon="🔍",
+    layout="wide"
+)
 
 # --- SESSION STATE INITIALIZATION ---
 if 'authenticated' not in st.session_state:
@@ -24,107 +19,200 @@ if 'authenticated' not in st.session_state:
 
 if 'language' not in st.session_state:
     st.session_state.language = "zh"  # Default to Mandarin
-    
+
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 
-# Password hash (for "MPFvive8955@#@")
-CORRECT_PASSWORD_HASH = "67f49a115b64c1a8affbc851384932f5e3e32a4bcc3a1bf3dd7933a48e4a11c3"
+# --- PASSWORD VERIFICATION ---
+CORRECT_PASSWORD_HASH = "67f49a115b64c1a8affbc851384932f5e3e32a4bcc3a1bf3dd7933a48e4a11c3"  # For "MPFvive8955@#@"
 
 def verify_password(password):
     """Verify the password by comparing hashes"""
     password_hash = hashlib.sha256(password.encode()).hexdigest()
     return password_hash == CORRECT_PASSWORD_HASH
 
-# Translations dictionary (simplified for stability)
+# --- API KEY HANDLING ---
+try:
+    api_key = st.secrets["openai_api_key"]
+except (FileNotFoundError, KeyError):
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+
+# --- TRANSLATIONS ---
 translations = {
-    "app_title": {"zh": "质量控制助手", "en": "Quality Control Assistant"},
-    "login": {"zh": "登录", "en": "Login"},
-    "password": {"zh": "密码", "en": "Password"},
-    "enter_password": {"zh": "请输入密码访问系统", "en": "Please enter password to access the system"},
-    "incorrect_password": {"zh": "密码不正确，请重试", "en": "Incorrect password, please try again"},
-    "login_button": {"zh": "登录系统", "en": "Login to System"},
-    "logout": {"zh": "退出登录", "en": "Logout"},
-    "welcome": {"zh": "欢迎使用宁海威斐质量控制系统", "en": "Welcome to Ninghai Vive Quality Control System"},
-    "settings": {"zh": "设置", "en": "Settings"},
-    "language": {"zh": "语言", "en": "Language"},
-    "chinese": {"zh": "中文", "en": "Chinese"},
-    "english": {"zh": "英文", "en": "English"},
-    "temperature": {"zh": "温度", "en": "Temperature"},
-    "max_response_length": {"zh": "最大响应长度", "en": "Maximum response length"},
-    "new_conversation": {"zh": "新对话", "en": "New Conversation"},
-    "download_conversation": {"zh": "下载对话", "en": "Download Conversation"},
-    "chat_bot": {"zh": "聊天机器人 🤖", "en": "Chat Bot 🤖"},
-    "document_translator": {"zh": "文档翻译 🔄", "en": "Document Translator 🔄"},
-    "sop_library": {"zh": "SOP标准库 📚", "en": "SOP Library 📚"},
-    "faq": {"zh": "常见问题 ❓", "en": "FAQ ❓"},
-    "your_message": {"zh": "您的消息：", "en": "Your message:"},
-    "send": {"zh": "发送", "en": "Send"},
-    "thinking": {"zh": "思考中...", "en": "Thinking..."},
-    "greeting": {"zh": "👋 您好！请尝试向我询问有关质量控制的问题：", "en": "👋 Hello! Please try asking me questions about quality control:"},
-    "contact_alex": {"zh": "如有不确定，请联系质量经理Alex: alexander.popoff@vivehealth.com", "en": "When in doubt, contact Quality Manager Alex: alexander.popoff@vivehealth.com"},
-    "by_vive": {"zh": "宁海威斐质量控制系统", "en": "Ninghai Vive Quality Control System"}
+    "zh": {
+        "app_title": "质量控制助手",
+        "welcome": "欢迎使用宁海威斐质量控制系统",
+        "password": "密码",
+        "enter_password": "请输入密码访问系统",
+        "login_button": "登录系统",
+        "incorrect_password": "密码不正确，请重试",
+        "settings": "设置",
+        "chinese": "中文",
+        "english": "英文",
+        "logout": "退出登录",
+        "chat_bot": "聊天机器人 🤖",
+        "sop_library": "SOP标准库 📚",
+        "faq": "常见问题 ❓",
+        "quality_assistant": "您的质量相关问题和任务的AI助手。",
+        "your_message": "您的消息：",
+        "send": "发送",
+        "thinking": "思考中...",
+        "by_vive": "宁海威斐质量控制系统",
+        "new_conversation": "新对话",
+        "model_info": "使用专门训练的质量控制模型"
+    },
+    "en": {
+        "app_title": "Quality Control Assistant",
+        "welcome": "Welcome to Ninghai Vive Quality Control System",
+        "password": "Password",
+        "enter_password": "Enter password to access the system",
+        "login_button": "Login to System",
+        "incorrect_password": "Incorrect password, please try again",
+        "settings": "Settings",
+        "chinese": "Chinese",
+        "english": "English",
+        "logout": "Logout",
+        "chat_bot": "Chat Bot 🤖",
+        "sop_library": "SOP Library 📚",
+        "faq": "FAQ ❓",
+        "quality_assistant": "Your AI assistant for quality-related questions and tasks.",
+        "your_message": "Your message:",
+        "send": "Send",
+        "thinking": "Thinking...",
+        "by_vive": "Ninghai Vive Quality Control System",
+        "new_conversation": "New Conversation",
+        "model_info": "Using fine-tuned quality control model"
+    }
 }
 
-# Helper function to get translated text
 def t(key):
-    if key in translations:
-        return translations[key][st.session_state.language]
+    """Get translated text based on current language"""
+    lang = st.session_state.language
+    if lang in translations and key in translations[lang]:
+        return translations[lang][key]
     return key
 
-# --- STYLES (simplified to avoid indentation errors) ---
+# --- CSS STYLES ---
 st.markdown("""
 <style>
-/* Login styles */
-.login-container { max-width: 400px; margin: 0 auto; padding: 2rem; border-radius: 10px; background-color: #f0f2f6; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); text-align: center; }
-.login-title { font-size: 1.5rem; margin-bottom: 1.5rem; color: #0d47a1; }
-.login-button { background-color: #4285F4; color: white; padding: 0.6rem 1.2rem; border-radius: 4px; border: none; font-size: 1rem; cursor: pointer; margin-top: 1rem; }
-.login-error { color: #d32f2f; margin-top: 1rem; }
+/* Main styles */
+body {
+    font-family: 'Arial', sans-serif;
+}
+
+/* Login page */
+.login-container {
+    max-width: 400px;
+    margin: 40px auto;
+    padding: 2rem;
+    border-radius: 10px;
+    background-color: #f0f2f6;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    text-align: center;
+}
+
+.login-title {
+    margin-bottom: 1.5rem;
+    color: #0d47a1;
+}
 
 /* Chat styles */
-.chat-message { padding: 1.5rem; border-radius: 0.5rem; margin-bottom: 1rem; display: flex; flex-direction: row; align-items: flex-start; }
-.chat-message.user { background-color: #f0f2f6; }
-.chat-message.assistant { background-color: #e3f2fd; }
-.chat-message .avatar { width: 40px; height: 40px; margin-right: 1rem; border-radius: 50%; object-fit: cover; }
-.chat-message .message { flex: 1; }
+.chat-message {
+    padding: 1rem;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: flex-start;
+}
 
-/* Other styles */
-.floating-button { position: fixed; bottom: 20px; right: 20px; z-index: 1000; }
-.sidebar .block-container { padding-top: 2rem; }
-.language-toggle { margin-bottom: 1rem; }
-.contact-alex { margin-top: 1rem; padding: 1rem; border-radius: 0.5rem; background-color: #ffebee; color: #c62828; font-weight: bold; }
+.chat-message.user {
+    background-color: #f0f2f6;
+}
+
+.chat-message.assistant {
+    background-color: #e3f2fd;
+}
+
+.chat-message .avatar {
+    width: 40px;
+    height: 40px;
+    margin-right: 1rem;
+    border-radius: 50%;
+}
+
+.chat-message .message {
+    flex: 1;
+}
+
+/* Help button */
+.help-button {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: #4285F4;
+    color: white;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    z-index: 1000;
+    text-decoration: none;
+}
+
+/* Mobile optimization */
+@media (max-width: 768px) {
+    .chat-message {
+        padding: 0.8rem;
+    }
+    .chat-message .avatar {
+        width: 30px;
+        height: 30px;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
-# --- DIRECT API CALL FUNCTION ---
-def call_openai_api(messages, temperature, max_tokens, api_key):
-    """Call OpenAI API directly using requests to avoid client issues"""
+# --- API FUNCTION ---
+def call_openai_api(messages, temperature=0.7, max_tokens=1024):
+    """Call OpenAI API with the fine-tuned model"""
+    if not api_key:
+        st.error("API Key not found. Please set it up in your environment.")
+        return "Error: API Key not configured."
+    
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
     
-    # Use the fine-tuned model specifically for quality control
+    # Use the fine-tuned model
     fine_tuned_model = "ft:gpt-4o-2024-08-06:vive-health-quality-department:1vive-quality-training-data:BQqHZoPo"
     
-    payload = {
-        "model": fine_tuned_model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens
-    }
-    
     try:
+        payload = {
+            "model": fine_tuned_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
         response = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers=headers,
-            data=json.dumps(payload)
+            data=json.dumps(payload),
+            timeout=30
         )
         
+        # If successful
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"]
-        else:
-            # Fallback to standard gpt-4o
+        
+        # If model not found, try with standard GPT-4o
+        if response.status_code == 404:
+            st.warning("Fine-tuned model not available. Using GPT-4o instead.")
             fallback_payload = {
                 "model": "gpt-4o",
                 "messages": messages,
@@ -135,265 +223,279 @@ def call_openai_api(messages, temperature, max_tokens, api_key):
             fallback_response = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
-                data=json.dumps(fallback_payload)
+                data=json.dumps(fallback_payload),
+                timeout=30
             )
             
             if fallback_response.status_code == 200:
-                return "(Fallback to standard GPT-4o) " + fallback_response.json()["choices"][0]["message"]["content"]
+                return "(Using GPT-4o) " + fallback_response.json()["choices"][0]["message"]["content"]
             else:
-                error_message = f"API Error: {fallback_response.status_code} - {fallback_response.text}"
-                raise Exception(error_message)
-    except Exception as e:
-        error_message = f"Error: {str(e)}"
-        raise Exception(error_message)
-
-# Create system message with SOP information
-sop_system_message = """You are a Quality Control Assistant for Vive Health. Your primary role is to help the quality team in the Ninghai, China facility with questions about quality control procedures, especially regarding critical safety products.
-
-Respond in the same language the user uses (Chinese or English). For Mandarin responses, use simple, clear language appropriate for manufacturing staff in Ninghai, China.
-
-IMPORTANT: Always advise users to contact Quality Manager Alex at alexander.popoff@vivehealth.com if they are uncertain about any quality procedures or find any defects.
-"""
-
-# --- LOGIN SCREEN ---
-if not st.session_state.authenticated:
-    st.markdown(f"""
-    <div class="login-container">
-        <div class="login-title">{t("welcome")}</div>
-    </div>
-    """, unsafe_allow_html=True)
+                return f"Error with fallback API call: {fallback_response.status_code}"
+        
+        return f"Error: {response.status_code} - {response.text}"
     
-    # Create centered login form
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# --- LOGIN PAGE ---
+if not st.session_state.authenticated:
+    # Center the login content
     col1, col2, col3 = st.columns([1, 2, 1])
+    
     with col2:
         st.markdown("""
-        <div style="text-align: center; margin-bottom: 20px;">
-            <h2>Quality Control Assistant</h2>
-            <h3>质量控制助手</h3>
-            <p>Please enter your password to access the system</p>
-            <p>请输入密码访问系统</p>
+        <div class="login-container">
+            <h1>Quality Control Assistant</h1>
+            <h2>质量控制助手</h2>
+            <p style="margin-top: 20px; margin-bottom: 20px;">
+                Welcome to Ninghai Vive Quality Control System<br>
+                欢迎使用宁海威斐质量控制系统
+            </p>
         </div>
         """, unsafe_allow_html=True)
         
-        password_input = st.text_input(
-            t("password"), 
-            type="password", 
-            placeholder=t("enter_password"),
-            help="请输入管理员提供的访问密码 | Please enter the access password provided by your administrator"
-        )
+        # Two-column layout for login form
+        login_col1, login_col2 = st.columns([3, 1])
         
-        login_error = st.empty()  # Placeholder for login error
+        with login_col1:
+            st.markdown(f"##### {t('password')} / Password")
+            password = st.text_input(
+                "输入密码 | Enter password", 
+                type="password", 
+                help="请输入管理员提供的访问密码 | Please enter the access password provided by your administrator",
+                label_visibility="collapsed"
+            )
         
-        if st.button(t("login_button") + " / 登录", use_container_width=True):
-            try:
-                if verify_password(password_input):
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    login_error.error(t("incorrect_password") + " / 密码不正确，请重试")
-            except Exception as e:
-                login_error.error(f"Login error: {str(e)}")
-                
-        st.image("https://api.dicebear.com/7.x/bottts/svg?seed=gpt", width=150)
+        with login_col2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)  # Spacer
         
-        # Version info at bottom of login page
+        # Login button with both languages
+        if st.button("登录 | Login", use_container_width=True):
+            if verify_password(password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("密码不正确，请重试 | Incorrect password, please try again")
+        
+        # Login page footer with version info
         st.markdown("""
-        <div style="position: fixed; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 0.8em; color: #666;">
-            Version 1.0.2 | Powered by Vive Health Quality Department<br>
-            Using custom trained model: ft:gpt-4o:vive-health-quality-department:1vive-quality-training-data
+        <div style="text-align: center; margin-top: 30px;">
+            <img src="https://api.dicebear.com/7.x/bottts/svg?seed=gpt" width="120" />
+            <p style="margin-top: 20px; color: #666; font-size: 0.8em;">
+                Version 1.0.2 | Vive Health Quality Department<br>
+                Using custom trained model for Quality Control
+            </p>
         </div>
         """, unsafe_allow_html=True)
+
 else:
+    # --- MAIN APPLICATION AFTER LOGIN ---
+    
     # --- SIDEBAR ---
     with st.sidebar:
-        st.title(t("settings"))
+        st.title(f"{t('settings')} | Settings")
         
         # Language selector
-        st.markdown('<div class="language-toggle">', unsafe_allow_html=True)
+        st.subheader("Language | 语言")
         lang_col1, lang_col2 = st.columns(2)
         with lang_col1:
-            if st.button("🇨🇳 " + t("chinese"), use_container_width=True):
+            if st.button("🇨🇳 中文", use_container_width=True):
                 st.session_state.language = "zh"
                 st.rerun()
         with lang_col2:
-            if st.button("🇺🇸 " + t("english"), use_container_width=True):
+            if st.button("🇺🇸 English", use_container_width=True):
                 st.session_state.language = "en"
                 st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
         
-        # Display model info
-        st.success("""
-        **使用专门训练的质量控制模型 ✅**
-        **Using fine-tuned quality control model ✅**
-        """)
+        # Model information
+        st.success(f"{t('model_info')} ✅")
         
-        # Temperature Slider
-        temperature = st.slider(
-            t("temperature"),
-            min_value=0.0,
-            max_value=1.0,
-            value=0.7,
-            step=0.1
-        )
+        with st.expander("Model details | 模型详情"):
+            st.code("ft:gpt-4o-2024-08-06:vive-health-quality-department:1vive-quality-training-data:BQqHZoPo")
         
-        # Maximum Length
-        max_tokens = st.slider(
-            t("max_response_length"),
-            min_value=256,
-            max_value=4096,
-            value=1024,
-            step=256
-        )
-        
-        # Reset Conversation
-        if st.button(t("new_conversation")):
+        # Conversation controls
+        if st.button(f"{t('new_conversation')} | New Conversation"):
             st.session_state.messages = []
             st.rerun()
         
-        # Download Conversation
-        if st.session_state.messages:
-            if st.button(t("download_conversation")):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"conversation_{timestamp}.txt"
-                
-                content = ""
-                for msg in st.session_state.messages:
-                    content += f"{msg['role'].title()}: {msg['content']}\n\n"
-                
-                st.download_button(
-                    label=t("download_conversation"),
-                    data=content,
-                    file_name=filename,
-                    mime="text/plain"
-                )
-        
         # Logout button
-        if st.button(t("logout"), type="primary"):
+        if st.button(f"{t('logout')} | Logout", type="primary"):
             st.session_state.authenticated = False
             st.rerun()
-
-        st.markdown("---")
-        st.markdown(t("by_vive"))
-
-    # --- MAIN TABS ---
-    # Create tabs first
-    tabs = st.tabs([t("chat_bot"), t("sop_library"), t("faq")])
-    
-    # Tab 1: Chat Bot
-    with tabs[0]:
-        st.header(t("app_title") + " 🤖")
         
-        # Display chat messages
+        st.markdown("---")
+        st.markdown(f"{t('by_vive')} | Ninghai Vive Quality Control System")
+    
+    # --- TABS ---
+    tab1, tab2, tab3 = st.tabs([
+        f"{t('chat_bot')} | Chat Bot", 
+        f"{t('sop_library')} | SOP Library", 
+        f"{t('faq')} | FAQ"
+    ])
+    
+    # --- CHAT TAB ---
+    with tab1:
+        st.header(f"{t('app_title')} | Quality Control Assistant 🤖")
+        st.markdown(f"{t('quality_assistant')}")
+        
+        # Display chat history
         for message in st.session_state.messages:
-            with st.container():
-                st.markdown(f"""
-                <div class="chat-message {message['role']}">
-                    <img class="avatar" src="{'https://api.dicebear.com/7.x/bottts/svg?seed=gpt' if message['role'] == 'assistant' else 'https://api.dicebear.com/7.x/personas/svg?seed=user'}" />
-                    <div class="message">
-                        <p>{message['content']}</p>
-                    </div>
+            avatar_url = "https://api.dicebear.com/7.x/bottts/svg?seed=gpt" if message["role"] == "assistant" else "https://api.dicebear.com/7.x/personas/svg?seed=user"
+            
+            st.markdown(f"""
+            <div class="chat-message {message['role']}">
+                <img class="avatar" src="{avatar_url}" />
+                <div class="message">
+                    <p>{message['content']}</p>
                 </div>
-                """, unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
         
         # Input area
-        with st.container():
-            user_input = st.text_area(t("your_message"), key="user_input", height=100)
-            col1, col2 = st.columns([6, 1])
+        user_input = st.text_area(f"{t('your_message')} | Your message:", height=100)
+        
+        # Send button
+        if st.button(f"{t('send')} | Send", key="send_button"):
+            if user_input:
+                # Add user message to chat
+                st.session_state.messages.append({"role": "user", "content": user_input})
+                
+                with st.spinner(f"{t('thinking')} | Thinking..."):
+                    # Basic system message
+                    messages = [
+                        {"role": "system", "content": "You are a Quality Control Assistant for Vive Health, helping the quality team in Ninghai, China with quality control procedures, especially for critical safety products."}
+                    ]
+                    
+                    # Add conversation history
+                    for msg in st.session_state.messages:
+                        messages.append({"role": msg["role"], "content": msg["content"]})
+                    
+                    # Get response from API
+                    assistant_response = call_openai_api(messages)
+                    
+                    # Add assistant response to chat
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                    # Refresh the UI
+                    st.rerun()
+        
+        # Show greeting for empty chat
+        if not st.session_state.messages:
+            st.info("👋 Hello! Ask me questions about quality control procedures. | 您好！请向我询问有关质量控制程序的问题。")
             
-            with col2:
-                submit_button = st.button(t("send"))
+            # Sample questions
+            st.markdown("**Sample questions | 示例问题:**")
+            st.markdown("- How do I test transfer slings? | 如何测试转移吊带？")
+            st.markdown("- What is the sampling inspection level? | 抽样检验水平是什么？")
+            st.markdown("- What should I do when I find defects? | 发现缺陷时应该怎么做？")
+    
+    # --- SOP LIBRARY TAB ---
+    with tab2:
+        st.header(f"{t('sop_library')} | SOP Library 📚")
         
-        # Process input
-        if submit_button and user_input:
-            # Add user message to chat history
-            st.session_state.messages.append({"role": "user", "content": user_input})
+        # Simple SOP library with tabs for different categories
+        sop_types = st.radio(
+            "Category | 类别",
+            ["All | 全部", "Testing | 测试", "Inspection | 检验", "Materials | 材料"],
+            horizontal=True
+        )
+        
+        st.subheader("Product Groups | 产品组")
+        
+        with st.expander("GROUP 1: HIGH LOAD TRANSFER PRODUCTS | 第一组：高负载转移产品", expanded=True):
+            st.markdown("**S-3 Level, 408kg load, 20 min test, 0.1% AQL | S-3级别, 408kg负载, 20分钟测试, 0.1% AQL**")
+            st.markdown("""
+            - Transfer Sling (MI487/LVA2056BLK) | 转移吊带
+            - Transfer Blanket Small (MI621/MOB1022WHTLS) | 小号转移床单
+            - Transfer Blanket with Handles (MI624/LVA2000) | 带把手转移床单
+            - Lift Sling with Opening (MI645/LVA2057BLU) | 开孔提升吊带
+            - Wooden Transfer Board (RHB1037WOOD/L) | 木质转移板
+            - Core Hydraulic Patient Lift (MOB1120) | 核心液压病人升降机
+            - Hydraulic Patient Lift Systems (MOB1068PMP, MOB1068SLG) | 液压病人升降系统
+            - Transfer Blanket Large (MI621-L/MOB1022WHTL) | 大号转移床单
+            """)
+        
+        with st.expander("GROUP 2: SUPPORT DEVICES | 第二组：支撑设备"):
+            st.markdown("**S-2 Level, 0.1% AQL, 5 min test | S-2级别, 0.1% AQL, 5分钟测试**")
+            st.markdown("""
+            - Car Assist Handle (MI474/LVA2098) - 137kg | 汽车辅助拉手
+            - Portable Stand Assist (MI524-LVA3016BLK) - 115kg | 便携式站立辅助器
+            """)
+        
+        with st.expander("GROUP 3: PERSONAL SUPPORT ITEMS | 第三组：个人支撑物品"):
+            st.markdown("**S-1 Level, 0.1% AQL | S-1级别, 0.1% AQL**")
+            st.markdown("""
+            - Transfer Harness (MI471/RHB1054) - 181kg, 5 min - 4 handles each test | 转移背带
+            - All Transfer Belts - 225kg, 5 min | 所有转移带
+            """)
+        
+        # Material testing section
+        if sop_types in ["All | 全部", "Materials | 材料"]:
+            st.subheader("Material Testing | 材料测试")
             
-            # Check if API key is available
-            if not api_key:
-                st.error("API Key not configured. Please set up API key.")
-            else:
-                # Call OpenAI API
-                try:
-                    with st.spinner(t("thinking") + " / 思考中..."):
-                        # Create messages for API
-                        messages = [
-                            {"role": "system", "content": sop_system_message}
-                        ]
-                        
-                        # Add previous messages
-                        for m in st.session_state.messages:
-                            messages.append({"role": m["role"], "content": m["content"]})
-                        
-                        # API call with fine-tuned model
-                        assistant_response = call_openai_api(
-                            messages=messages,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            api_key=api_key
-                        )
-                        
-                        # Add assistant response to chat history
-                        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                        
-                        # Rerun to update UI
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-        
-        # Add sample questions for empty conversation
-        if len(st.session_state.messages) == 0:
-            st.info(t("greeting"))
-            st.markdown(f'<div class="contact-alex">{t("contact_alex")}</div>', unsafe_allow_html=True)
+            material_data = {
+                "Material | 材料": ["Straps/Webbing | 织带/带子", "Hardware | 硬件", "Fabric/Mesh | 面料/网布"],
+                "Test Method | 测试方法": ["Visual + 120% load test | 目视 + 120%负载测试", 
+                                         "Visual + 120% load test | 目视 + 120%负载测试", 
+                                         "Visual + 100% load test | 目视 + 100%负载测试"],
+                "Acceptance | 接受标准": ["No tears/deformation | 无撕裂/变形", 
+                                       "No breakage | 无断裂", 
+                                       "No tears | 无撕裂"]
+            }
+            
+            st.table(pd.DataFrame(material_data))
     
-    # Tab 2: SOP Library (simplified)
-    with tabs[1]:
-        st.header(t("sop_library") + " 📚")
-        st.info("This is a simplified version of the SOP Library. The complete version will include all product specifications, testing procedures, and quality standards.")
+    # --- FAQ TAB ---
+    with tab3:
+        st.header(f"{t('faq')} | FAQ ❓")
         
-        # Basic SOP content
-        st.subheader("Product Groups:")
-        st.markdown("""
-        **GROUP 1: HIGH LOAD TRANSFER PRODUCTS**
-        - S-3 Level, 408kg load, 20 min test, 0.1% AQL
-        - Products: Transfer Sling, Transfer Blanket, Patient Lift Systems
+        with st.expander("What load testing is required for transfer slings? | 转移吊带需要什么负载测试？", expanded=True):
+            st.markdown("""
+            **English:** Transfer slings (MI487/LVA2056BLK) require S-3 level inspection with a 408kg static load test for 20 minutes. The AQL is 0.1%, which essentially means zero defects for normal batch sizes.
+            
+            **中文:** 转移吊带（MI487/LVA2056BLK）需要S-3级别检验，进行408kg静态负载测试，持续20分钟。AQL为0.1%，这对于正常批量大小实际上意味着零缺陷。
+            """)
         
-        **GROUP 2: SUPPORT DEVICES**
-        - S-2 Level, 0.1% AQL, 5 min test
-        - Products: Car Assist Handle (137kg), Portable Stand Assist (115kg)
+        with st.expander("What should I do if I find a defect during inspection? | 如果在检验过程中发现缺陷，我应该怎么做？"):
+            st.markdown("""
+            **English:** If a defect is found:
+            1. Reinspect the lot at the next higher inspection level (e.g., S-2 becomes S-3).
+            2. Contact material vendors if defects are traced to incoming materials.
+            3. For high-risk products like patient lift slings, no relaxation of standards is allowed.
+            4. For lower-risk products, if defects are isolated and safe units can be confirmed, some adjustments may be acceptable.
+            
+            Always inform Quality Manager Alex if you're uncertain.
+            
+            **中文:** 如果发现缺陷：
+            1. 使用更高检验水平重新检验批次（例如，S-2变为S-3）。
+            2. 如果发现问题源于原材料而非MPF工艺，联系材料供应商。
+            3. 对于高风险产品如病人升降吊带，不允许放宽标准。
+            4. 对于较低风险产品，如果缺陷是孤立的且能确认安全单元，在咨询Alex后可能接受一些调整。
+            
+            如有不确定，请务必通知质量经理Alex。
+            """)
         
-        **GROUP 3: PERSONAL SUPPORT ITEM**
-        - S-1 Level, 0.1% AQL
-        - Products: Transfer Harness, Transfer Belts
-        """)
+        with st.expander("What does '120% load test' mean? | '120%负载测试'是什么意思？"):
+            st.markdown("""
+            **English:** The 120% load test refers to testing materials at 120% of the advertised maximum weight for the product. For example, if a product's advertised maximum weight is 200kg, the materials should be tested at 240kg.
+            
+            **中文:** 120%负载测试是指在产品宣传的最大承重的120%下测试材料。例如，如果产品宣传的最大承重是200kg，则材料应在240kg下测试。
+            """)
+        
+        with st.expander("What are the material testing requirements before production? | 生产前的材料测试要求是什么？"):
+            st.markdown("""
+            **English:** Before production, test critical components using the same sampling level as the final product:
+            1. Straps/Webbing: Visual + 120% load test with no tears/deformation allowed.
+            2. Hardware: Visual + 120% load test with no breakage allowed.
+            3. Fabric/Mesh: Visual + 100% load test with no tears allowed.
+            
+            **中文:** 生产前，使用与最终产品相同的抽样水平测试关键组件：
+            1. 织带/带子：目视+120%负载测试，不允许有撕裂/变形。
+            2. 硬件：目视+120%负载测试，不允许有断裂。
+            3. 面料/网布：目视+100%负载测试，不允许有撕裂。
+            """)
     
-    # Tab 3: FAQ (simplified)
-    with tabs[2]:
-        st.header(t("faq") + " ❓")
-        st.info("This is a simplified version of the FAQ section. The complete version will include detailed answers to common quality control questions.")
-        
-        # Basic FAQ content
-        st.subheader("Common Questions:")
-        st.markdown("""
-        **What's the AQL standard for our safety products?**
-        All critical safety products use an AQL of 0.1%, which essentially means zero defects are allowed for normal batch sizes.
-        
-        **What should I do if I find a defect during inspection?**
-        If a defect is found: 1) Reinspect the lot at the next higher inspection level, 2) Contact material vendors if defects are from materials, 3) For high-risk products, no relaxation of standards is allowed - contact Alex immediately.
-        
-        **What does load testing being destructive mean?**
-        Products that undergo load testing should not be sold after testing, as the structural integrity may be compromised even if no visible damage is present.
-        """)
-        
-        # Add contact information
-        st.markdown(f'<div class="contact-alex">{t("contact_alex")}</div>', unsafe_allow_html=True)
-
-    # Add floating help button
+    # Contact button
     st.markdown("""
-    <div class="floating-button">
-        <a href="mailto:alexander.popoff@vivehealth.com" target="_blank" style="text-decoration:none;">
-            <button style="background-color:#4285F4; color:white; border:none; padding:10px 15px; border-radius:50%; font-size:16px;">
-                ?
-            </button>
-        </a>
-    </div>
+    <a href="mailto:alexander.popoff@vivehealth.com" class="help-button">?</a>
     """, unsafe_allow_html=True)
