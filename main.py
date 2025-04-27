@@ -24,13 +24,10 @@ if 'messages' not in st.session_state:
     st.session_state.messages = []
 
 # --- PASSWORD VERIFICATION ---
-CORRECT_PASSWORD_HASH = "67f49a115b64c1a8affbc851384932f5e3e32a4bcc3a1bf3dd7933a48e4a11c3"  # For "MPFvive8955@#@"
-
 def verify_password(password):
-    """Verify the password by comparing hashes"""
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    return password_hash == CORRECT_PASSWORD_HASH
-
+    """Temporary simplified password check"""
+    return password == "MPFvive8955@#@"  # Just check direct equality
+    
 # --- API KEY HANDLING ---
 try:
     api_key = st.secrets["openai_api_key"]
