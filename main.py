@@ -637,7 +637,176 @@ st.markdown("""
         display: flex;
         flex-direction: row;
         align-items: flex-start;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        transition: transform 0.2s ease;
     }
+    .chat-message:hover {
+        transform: translateY(-2px);
+    }
+    .chat-message.user {
+        background-color: #f0f2f6;
+    }
+    .chat-message.assistant {
+        background-color: #e3f2fd;
+    }
+    .chat-message .avatar {
+        width: 40px;
+        height: 40px;
+        margin-right: 1rem;
+        border-radius: 50%;
+        object-fit: cover;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .chat-message .message {
+        flex: 1;
+    }
+    .stTextInput input {
+        padding: 0.5rem !important;
+        font-size: 1rem !important;
+    }
+    .floating-button {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 1000;
+    }
+    .sidebar .block-container {
+        padding-top: 2rem;
+    }
+    .main-tabs .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .main-tabs .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 4px 4px 0 0;
+        gap: 1px;
+        padding: 10px 16px;
+        margin-right: 4px;
+    }
+    .main-tabs .stTabs [aria-selected="true"] {
+        background-color: #e3f2fd;
+        border-bottom: 2px solid #4285F4;
+    }
+    .progress-container {
+        padding: 20px;
+        border-radius: 10px;
+        background-color: #f0f2f6;
+        margin-bottom: 20px;
+    }
+    .faq-item {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border: 1px solid #e0e0e0;
+        transition: box-shadow 0.3s ease;
+    }
+    .faq-item:hover {
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .faq-question {
+        font-weight: bold;
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+    }
+    .faq-answer {
+        font-size: 1rem;
+    }
+    .faq-category {
+        display: inline-block;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+    }
+    .category-Testing {
+        background-color: #e3f2fd;
+        color: #0d47a1;
+    }
+    .category-Inspection {
+        background-color: #e8f5e9;
+        color: #1b5e20;
+    }
+    .category-Materials {
+        background-color: #fff3e0;
+        color: #e65100;
+    }
+    .contact-alex {
+        margin-top: 1rem;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        background-color: #ffebee;
+        color: #c62828;
+        font-weight: bold;
+    }
+    .critical-product {
+        font-weight: bold;
+        color: #c62828;
+    }
+    .search-box {
+        margin-bottom: 1rem;
+    }
+    .sop-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .sop-table th, .sop-table td {
+        padding: 0.5rem;
+        text-align: left;
+        border: 1px solid #e0e0e0;
+    }
+    .sop-table th {
+        background-color: #f0f2f6;
+    }
+    .language-toggle {
+        margin-bottom: 1rem;
+    }
+    
+    /* Mobile optimization */
+    @media (max-width: 768px) {
+        .chat-message {
+            padding: 1rem;
+        }
+        .chat-message .avatar {
+            width: 30px;
+            height: 30px;
+        }
+        .st-emotion-cache-1r6slb0 {
+            max-width: 100% !important;
+        }
+    }
+    
+    /* Tooltip styles */
+    .tooltip {
+        visibility: hidden;
+        background-color: #333;
+        color: white;
+        text-align: center;
+        padding: 5px;
+        border-radius: 4px;
+        position: absolute;
+        z-index: 1;
+        bottom: 125%;
+        left: 50%;
+        margin-left: -60px;
+        opacity: 0;
+        transition: opacity 0.3s;
+    }
+    .has-tooltip:hover .tooltip {
+        visibility: visible;
+        opacity: 1;
+    }
+    
+    /* Loading spinner enhancement */
+    .stSpinner {
+        border-width: 5px !important;
+    }
+    .st-emotion-cache-16txtl3 {
+        font-weight: 500 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
     .chat-message.user {
         background-color: #f0f2f6;
     }
@@ -756,30 +925,62 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- DIRECT API CALL FUNCTION ---
-def call_openai_api(messages, model, temperature, max_tokens, api_key):
+def call_openai_api(messages, temperature, max_tokens, api_key):
     """Call OpenAI API directly using requests to avoid client issues"""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
     
+    # Use the fine-tuned model specifically for quality control
+    fine_tuned_model = "ft:gpt-4o-2024-08-06:vive-health-quality-department:1vive-quality-training-data:BQqHZoPo"
+    
     payload = {
-        "model": model,
+        "model": fine_tuned_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens
     }
     
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=headers,
-        data=json.dumps(payload)
-    )
-    
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    else:
-        error_message = f"API Error: {response.status_code} - {response.text}"
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            data=json.dumps(payload)
+        )
+        
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            # Better error handling
+            if response.status_code == 404:
+                # Model not found error - fallback to standard gpt-4o
+                st.warning("Fine-tuned model not found. Falling back to standard GPT-4o.")
+                
+                fallback_payload = {
+                    "model": "gpt-4o",
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens
+                }
+                
+                fallback_response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    data=json.dumps(fallback_payload)
+                )
+                
+                if fallback_response.status_code == 200:
+                    return fallback_response.json()["choices"][0]["message"]["content"]
+                else:
+                    error_message = f"Fallback API Error: {fallback_response.status_code} - {fallback_response.text}"
+                    raise Exception(error_message)
+            else:
+                error_message = f"API Error: {response.status_code} - {response.text}"
+                raise Exception(error_message)
+    except requests.exceptions.RequestException as e:
+        # Network error handling
+        error_message = f"Network Error: {str(e)}"
         raise Exception(error_message)
 
 # --- DOCUMENT PROCESSING FUNCTIONS ---
@@ -842,7 +1043,7 @@ def process_document(uploaded_file):
     
     return text, pages
 
-def translate_text(text, source_lang, target_lang, model, temperature, api_key, progress_bar=None, status_text=None):
+def translate_text(text, source_lang, target_lang, temperature, max_tokens, api_key, progress_bar=None, status_text=None):
     """Translate text using OpenAI API"""
     
     # Split the text into chunks (approx 4000 tokens per chunk)
@@ -873,28 +1074,53 @@ def translate_text(text, source_lang, target_lang, model, temperature, api_key, 
     
     for i, chunk in enumerate(chunks):
         if status_text is not None:
-            status_text.text(f"Translating chunk {i+1}/{total_chunks}...")
+            status_text.text(f"Translating chunk {i+1}/{total_chunks}... | 正在翻译第{i+1}/{total_chunks}块...")
         
         messages = [
             {"role": "system", "content": f"You are a professional translator. Translate the following text from {source_lang} to {target_lang}. Maintain the original formatting as much as possible."},
             {"role": "user", "content": chunk}
         ]
         
-        translated_chunk = call_openai_api(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=4096,  # Maximum allowed by API
-            api_key=api_key
-        )
+        # Use gpt-4o for translation (not the fine-tuned model) as it's better for general translation
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
         
-        translated_chunks.append(translated_chunk)
+        payload = {
+            "model": "gpt-4o",  # Use standard gpt-4o for translation
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max(4096, max_tokens)  # Use at least 4096 tokens for translation
+        }
         
-        if progress_bar is not None:
-            progress_bar.progress((i + 1) / total_chunks)
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                data=json.dumps(payload)
+            )
+            
+            if response.status_code == 200:
+                translated_chunk = response.json()["choices"][0]["message"]["content"]
+            else:
+                error_message = f"API Error: {response.status_code} - {response.text}"
+                if status_text is not None:
+                    status_text.error(f"Error translating chunk {i+1}: {error_message}")
+                raise Exception(error_message)
+                
+            translated_chunks.append(translated_chunk)
+            
+            if progress_bar is not None:
+                progress_bar.progress((i + 1) / total_chunks)
+                
+        except Exception as e:
+            if status_text is not None:
+                status_text.error(f"Translation error: {str(e)}")
+            raise e
     
     if status_text is not None:
-        status_text.text("Translation completed!")
+        status_text.text("Translation completed! | 翻译完成！")
     
     return "\n".join(translated_chunks)
 
@@ -1053,6 +1279,15 @@ if not st.session_state.authenticated:
     # Create centered login form
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
+        st.markdown("""
+        <div style="text-align: center; margin-bottom: 20px;">
+            <h2>Quality Control Assistant</h2>
+            <h3>质量控制助手</h3>
+            <p>Please enter your password to access the system</p>
+            <p>请输入密码访问系统</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
         password_input = st.text_input(
             t("password"), 
             type="password", 
@@ -1060,19 +1295,39 @@ if not st.session_state.authenticated:
             help="请输入管理员提供的访问密码 | Please enter the access password provided by your administrator"
         )
         
-        if st.button(t("login_button"), use_container_width=True):
-            if verify_password(password_input):
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error(t("incorrect_password"))
+        login_error = st.empty()  # Placeholder for login error
+        
+        login_col1, login_col2 = st.columns([4, 1])
+        with login_col1:
+            if st.button(t("login_button") + " / 登录", use_container_width=True):
+                try:
+                    if verify_password(password_input):
+                        st.session_state.authenticated = True
+                        st.rerun()
+                    else:
+                        login_error.error(t("incorrect_password") + " / 密码不正确，请重试")
+                except Exception as e:
+                    login_error.error(f"Login error: {str(e)}")
+        
+        with login_col2:
+            st.markdown("<div style='height: 45px;'></div>", unsafe_allow_html=True)  # Spacer for alignment
                 
         st.image("https://api.dicebear.com/7.x/bottts/svg?seed=gpt", width=150)
+        
+        # Version info at bottom of login page
+        st.markdown("""
+        <div style="position: fixed; bottom: 10px; left: 0; right: 0; text-align: center; font-size: 0.8em; color: #666;">
+            Version 1.0.1 | Powered by Vive Health Quality Department<br>
+            Using custom trained model: ft:gpt-4o:vive-health-quality-department:1vive-quality-training-data
+        </div>
+        """, unsafe_allow_html=True)
 
-# --- MAIN CONTENT WITH TABS ---
+# --- MAIN CONTENT ---
 if st.session_state.authenticated:
+    # Only create tabs if authenticated
     st.markdown('<div class="main-tabs">', unsafe_allow_html=True)
-    tab1, tab2, tab3, tab4 = st.tabs([t("chat_bot"), t("document_translator"), t("sop_library"), t("faq")])
+    tabs = st.tabs([t("chat_bot"), t("document_translator"), t("sop_library"), t("faq")])
+    tab1, tab2, tab3, tab4 = tabs  # Assign tabs to variables
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab1:
@@ -1116,20 +1371,20 @@ with tab1:
         else:
             # Call OpenAI API directly without using the client library
             try:
-                with st.spinner(t("thinking")):
+                with st.spinner(t("thinking") + " / 思考中..."):
                     # Create messages array for API
+                    # For the fine-tuned model, we keep the system message simple
                     messages = [
-                        {"role": "system", "content": sop_system_message}
+                        {"role": "system", "content": "You are a Quality Control Assistant for Vive Health. Your primary role is to help the quality team in the Ninghai, China facility with questions about quality control procedures, especially regarding critical safety products."}
                     ]
                     
                     # Add previous messages
                     for m in st.session_state.messages:
                         messages.append({"role": m["role"], "content": m["content"]})
                     
-                    # Direct API call
+                    # Direct API call with fine-tuned model
                     assistant_response = call_openai_api(
                         messages=messages,
-                        model=model,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         api_key=api_key
@@ -1141,7 +1396,59 @@ with tab1:
                     # Rerun to update UI
                     st.rerun()
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                error_msg = f"Error: {str(e)}"
+                st.error(error_msg)
+                
+                # Try fallback to standard GPT-4o if fine-tuned model fails
+                try:
+                    with st.spinner("Trying standard GPT-4o... / 尝试使用标准GPT-4o..."):
+                        # Create messages array for API with the detailed system message
+                        messages = [
+                            {"role": "system", "content": sop_system_message}
+                        ]
+                        
+                        # Add previous messages
+                        for m in st.session_state.messages[:-1]:  # Exclude the last user message that we'll re-add
+                            messages.append({"role": m["role"], "content": m["content"]})
+                        
+                        # Create a new API call with standard GPT-4o
+                        headers = {
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {api_key}"
+                        }
+                        
+                        payload = {
+                            "model": "gpt-4o",
+                            "messages": messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens
+                        }
+                        
+                        fallback_response = requests.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers=headers,
+                            data=json.dumps(payload)
+                        )
+                        
+                        if fallback_response.status_code == 200:
+                            assistant_response = fallback_response.json()["choices"][0]["message"]["content"]
+                            
+                            # Add a note that this was a fallback response
+                            assistant_response = "(Using standard GPT-4o as fallback) " + assistant_response
+                            
+                            # Add assistant response to chat history
+                            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                            
+                            # Show info about fallback
+                            st.info("Fine-tuned model unavailable, used standard GPT-4o instead. / 微调模型不可用，使用了标准GPT-4o代替。")
+                            
+                            # Rerun to update UI
+                            st.rerun()
+                        else:
+                            # If fallback also fails
+                            st.error(f"Fallback also failed: {fallback_response.status_code} - {fallback_response.text}")
+                except Exception as fallback_error:
+                    st.error(f"Fallback error: {str(fallback_error)}")
     
     # Add sample questions or suggestions
     if len(st.session_state.messages) == 0:
@@ -1239,13 +1546,9 @@ with tab2:
                         - ~{estimated_tokens:,.0f} estimated tokens
                         """)
                         
-                        # Calculate cost and time estimates
-                        if model == "gpt-3.5-turbo":
-                            cost_estimate = estimated_tokens / 1000 * 0.0010  # $0.0010 per 1K input tokens
-                            time_estimate = (estimated_tokens / 4000) * 5  # ~5 seconds per 4K tokens
-                        else:  # gpt-4 models
-                            cost_estimate = estimated_tokens / 1000 * 0.01  # $0.01 per 1K input tokens
-                            time_estimate = (estimated_tokens / 4000) * 10  # ~10 seconds per 4K tokens
+                        # Calculate cost and time estimates - Updated for gpt-4o only
+                        cost_estimate = estimated_tokens / 1000 * 0.01  # $0.01 per 1K tokens for gpt-4o
+                        time_estimate = (estimated_tokens / 4000) * 10  # ~10 seconds per 4K tokens
                         
                         st.markdown(f"""
                         **Estimated Processing:**
@@ -1259,8 +1562,8 @@ with tab2:
                             text=text,
                             source_lang=source_language if source_language != t("auto_detect") else "",
                             target_lang=target_language,
-                            model=model,
                             temperature=temperature,
+                            max_tokens=max_tokens,
                             api_key=api_key,
                             progress_bar=progress_bar,
                             status_text=status_text
@@ -1435,9 +1738,63 @@ if st.session_state.authenticated:
     st.markdown("""
     <div class="floating-button">
         <a href="mailto:alexander.popoff@vivehealth.com" target="_blank" style="text-decoration:none;">
-            <button style="background-color:#4285F4; color:white; border:none; padding:10px 15px; border-radius:50%; font-size:16px;">
+            <button style="background-color:#4285F4; color:white; border:none; padding:10px 15px; border-radius:50%; font-size:16px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
                 ?
             </button>
         </a>
+        <div class="tooltip" style="position: absolute; bottom: 50px; right: 0; background-color: #333; color: white; padding: 5px 10px; border-radius: 4px; font-size: 12px; display: none;">
+            联系质量经理 | Contact Quality Manager
+        </div>
     </div>
+
+    <style>
+    .floating-button:hover .tooltip {
+        display: block;
+    }
+    </style>
     """, unsafe_allow_html=True)
+
+# Add error handling toast messages
+st.markdown("""
+<style>
+.toast {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background-color: #f8d7da;
+    color: #721c24;
+    padding: 10px 15px;
+    border-radius: 4px;
+    z-index: 9999;
+    display: none;
+    animation: fadeIn 0.3s, fadeOut 0.3s 2.7s;
+    max-width: 300px;
+}
+
+@keyframes fadeIn {
+    from {opacity: 0;}
+    to {opacity: 1;}
+}
+
+@keyframes fadeOut {
+    from {opacity: 1;}
+    to {opacity: 0;}
+}
+</style>
+
+<div id="errorToast" class="toast">
+    <div id="errorMessage">An error occurred</div>
+</div>
+
+<script>
+function showError(message) {
+    const toast = document.getElementById('errorToast');
+    const errorMsg = document.getElementById('errorMessage');
+    errorMsg.textContent = message;
+    toast.style.display = 'block';
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, 3000);
+}
+</script>
+""", unsafe_allow_html=True)
