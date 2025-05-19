@@ -647,6 +647,20 @@ if not st.session_state.authenticated:
     # Center the login content
     col1, col2, col3 = st.columns([1, 2, 1])
     
+    # Language selector at the top of login page
+    with col2:
+        st.markdown("<div style='text-align: center; margin-bottom: 20px;'>", unsafe_allow_html=True)
+        lang_col1, lang_col2 = st.columns(2)
+        with lang_col1:
+            if st.button("🇨🇳 中文", key="login_zh", use_container_width=True):
+                st.session_state.language = "zh"
+                st.rerun()
+        with lang_col2:
+            if st.button("🇺🇸 English", key="login_en", use_container_width=True):
+                st.session_state.language = "en"
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+    
     with col2:
         st.markdown(f"""
         <div class="login-container">
