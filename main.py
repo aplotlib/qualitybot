@@ -1,695 +1,574 @@
-# main.py - ISO13485 Expert Consultant
-# Enhanced medical device quality management system with dual AI integration
-
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-from io import BytesIO
-import json
-import os
-import base64
-from typing import Dict, List, Optional, Any
 import plotly.express as px
 import plotly.graph_objects as go
-from pathlib import Path
+from datetime import datetime, date, timedelta
+import io
+from typing import Dict, List, Optional, Any
+import openai
+import anthropic
+import json
+import base64
 
-# Import enhanced custom modules (we'll need to update these)
-from src.parsers import AIFileParser, parse_file
-from src.data_processing import DataProcessor, standardize_sales_data, standardize_returns_data
-from src.analysis import run_full_analysis
-from src.compliance import validate_capa_data, generate_compliance_checklist, get_regulatory_guidelines
-from src.document_generator import CapaDocumentGenerator, ISO13485DocumentGenerator
-from src.ai_integration import DualAPIManager, ExpertConsultant
-from src.risk_management import RiskAssessment, RiskMatrix
-from src.training_modules import TrainingLibrary, CompetencyTracker
-from src.regulatory_tracker import RegulatoryTracker, AuditManager
-
-# --- PAGE CONFIGURATION ---
+# Configure page
 st.set_page_config(
-    page_title="ISO13485 Expert Consultant",
+    page_title="ISO 13485 Expert Consultant",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- ENHANCED STYLING ---
+# Custom CSS for medical device theme
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
     .main-header {
-        background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 10px;
         color: white;
-        padding: 2rem;
-        border-radius: 15px;
         text-align: center;
         margin-bottom: 2rem;
-        box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
     }
     
-    .main-header h1 {
-        font-family: 'Inter', sans-serif;
-        font-weight: 700;
-        font-size: 2.5rem;
-        margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-    }
-    
-    .main-header p {
-        font-family: 'Inter', sans-serif;
-        font-weight: 400;
-        font-size: 1.2rem;
-        margin: 0.5rem 0 0 0;
-        opacity: 0.9;
-    }
-    
-    .feature-card {
+    .metric-card {
         background: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        transition: all 0.3s ease;
-    }
-    
-    .feature-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-        border-color: #3b82f6;
-    }
-    
-    .metric-container {
-        display: flex;
-        justify-content: space-around;
-        flex-wrap: wrap;
-        gap: 1rem;
-        margin: 1rem 0;
-    }
-    
-    .metric-box {
-        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-        border-radius: 10px;
         padding: 1rem;
-        text-align: center;
-        min-width: 150px;
-        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        border-left: 5px solid #667eea;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
     }
     
-    .success-badge {
-        background: #10b981;
-        color: white;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.875rem;
-        font-weight: 500;
-    }
-    
-    .warning-badge {
-        background: #f59e0b;
-        color: white;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.875rem;
-        font-weight: 500;
-    }
-    
-    .error-badge {
-        background: #ef4444;
-        color: white;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.875rem;
-        font-weight: 500;
-    }
-    
-    .sidebar-section {
-        background: #f8fafc;
+    .iso-section {
+        background: #f8f9ff;
+        border: 1px solid #e1e5f2;
         border-radius: 8px;
         padding: 1rem;
         margin: 1rem 0;
-        border: 1px solid #e2e8f0;
     }
     
-    .chat-message {
-        background: #f1f5f9;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid #3b82f6;
+    .compliance-status {
+        padding: 0.3rem 0.8rem;
+        border-radius: 15px;
+        font-weight: bold;
+        color: white;
     }
     
-    .ai-response {
-        background: #ecfdf5;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid #10b981;
+    .status-compliant { background-color: #28a745; }
+    .status-partial { background-color: #ffc107; color: black; }
+    .status-non-compliant { background-color: #dc3545; }
+    
+    .sidebar .sidebar-content {
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
     }
     
-    .document-preview {
-        background: #fafafa;
-        border: 1px dashed #d1d5db;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
-        text-align: center;
-    }
-    
-    /* Button Styling */
     .stButton > button {
-        background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
-        border-radius: 8px;
+        border-radius: 5px;
         padding: 0.5rem 1rem;
-        font-weight: 500;
-        transition: all 0.3s ease;
+        font-weight: bold;
     }
     
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-    }
-    
-    /* Tab Styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: #f1f5f9;
-        border-radius: 8px 8px 0 0;
-        padding: 0.75rem 1.5rem;
-        font-weight: 500;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
-        color: white;
+    .document-card {
+        border: 2px solid #e1e5f2;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+        background: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION ---
-def initialize_session_state():
-    """Initialize comprehensive session state for ISO13485 features."""
-    defaults = {
-        # Core data
-        'analysis_results': None,
-        'capa_data': {},
-        'nonconformance_data': {},
-        'audit_data': {},
-        'risk_assessments': {},
-        'training_records': {},
-        
-        # File handling
-        'uploaded_files': {},
-        'document_library': {},
-        'templates': {},
-        
-        # AI Integration
-        'ai_manager': None,
-        'expert_consultant': None,
-        'chat_history': [],
-        'active_model': 'anthropic',
-        
-        # User preferences
-        'user_role': 'Quality Manager',
-        'company_info': {},
-        'regulatory_regions': ['FDA', 'EU MDR', 'ISO13485'],
-        
-        # Dashboard data
-        'dashboard_metrics': {},
-        'alerts': [],
-        'recent_activities': [],
-        
-        # Document generation
-        'document_generator': None,
-        'generated_documents': {},
-        
-        # Compliance tracking
-        'compliance_status': {},
-        'audit_findings': [],
-        'regulatory_updates': [],
-        
-        # Training system
-        'competency_matrix': pd.DataFrame(),
-        'training_library': None,
-        
-        # Risk management
-        'risk_register': pd.DataFrame(),
-        'risk_assessments_history': []
-    }
+class ISO13485Expert:
+    """ISO 13485 Expert Consultant with AI integration"""
     
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-# --- AI INTEGRATION SETUP ---
-def initialize_ai_systems():
-    """Initialize dual AI system (OpenAI + Anthropic)."""
-    if st.session_state.ai_manager is None:
+    def __init__(self):
+        self.anthropic_client = None
+        self.openai_client = None
+        self._initialize_ai_clients()
+        
+        # ISO 13485 knowledge base structure
+        self.iso_sections = {
+            "4": "Quality Management System",
+            "5": "Management Responsibility", 
+            "6": "Resource Management",
+            "7": "Product Realization",
+            "8": "Measurement & Improvement"
+        }
+        
+        self.document_types = {
+            "CAPA": "Corrective and Preventive Action",
+            "NCR": "Nonconformance Report", 
+            "DHR": "Device History Record",
+            "DMR": "Device Master Record",
+            "Risk Assessment": "ISO 14971 Risk Management",
+            "Validation Protocol": "Process Validation Protocol",
+            "SOP": "Standard Operating Procedure",
+            "Quality Manual": "Quality Management System Manual",
+            "Design Controls": "Design Control Documentation",
+            "Audit Checklist": "Internal Audit Checklist"
+        }
+        
+    def _initialize_ai_clients(self):
+        """Initialize AI clients from Streamlit secrets"""
         try:
-            openai_key = st.secrets.get("OPENAI_API_KEY")
-            anthropic_key = st.secrets.get("ANTHROPIC_API_KEY")
-            
-            if openai_key or anthropic_key:
-                st.session_state.ai_manager = DualAPIManager(
-                    openai_key=openai_key,
-                    anthropic_key=anthropic_key
+            if 'anthropic_api_key' in st.secrets:
+                self.anthropic_client = anthropic.Anthropic(
+                    api_key=st.secrets['anthropic_api_key']
                 )
-                st.session_state.expert_consultant = ExpertConsultant(st.session_state.ai_manager)
-                st.session_state.document_generator = ISO13485DocumentGenerator(
-                    ai_manager=st.session_state.ai_manager
+            if 'openai_api_key' in st.secrets:
+                self.openai_client = openai.OpenAI(
+                    api_key=st.secrets['openai_api_key']
                 )
-                return True
-            else:
-                st.error("No AI API keys found in secrets. Please configure OPENAI_API_KEY and/or ANTHROPIC_API_KEY.")
-                return False
         except Exception as e:
-            st.error(f"Failed to initialize AI systems: {str(e)}")
-            return False
-    return True
+            st.error(f"Error initializing AI clients: {e}")
+    
+    def get_ai_response(self, prompt: str, model_choice: str = "anthropic") -> str:
+        """Get AI response from selected model"""
+        try:
+            if model_choice == "anthropic" and self.anthropic_client:
+                response = self.anthropic_client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=4000,
+                    system="You are an expert ISO 13485 consultant for medical device quality management. Provide detailed, accurate, and actionable guidance based on ISO 13485:2016 requirements.",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text
+            elif model_choice == "openai" and self.openai_client:
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are an expert ISO 13485 consultant for medical device quality management. Provide detailed, accurate, and actionable guidance based on ISO 13485:2016 requirements."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=4000
+                )
+                return response.choices[0].message.content
+            else:
+                return "AI service not available. Please check API configuration."
+        except Exception as e:
+            return f"Error getting AI response: {str(e)}"
 
-# --- MAIN APPLICATION HEADER ---
-def render_main_header():
-    """Render the main application header."""
+def main():
+    expert = ISO13485Expert()
+    
+    # Header
     st.markdown("""
     <div class="main-header">
-        <h1>🏥 ISO13485 Expert Consultant</h1>
-        <p>Comprehensive Medical Device Quality Management System with AI-Powered Expertise</p>
+        <h1>🏥 ISO 13485 Expert Consultant</h1>
+        <p>Medical Device Quality Management System Specialist</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # Sidebar navigation
+    st.sidebar.title("🔧 Navigation")
+    
+    pages = {
+        "🏠 Dashboard": "dashboard",
+        "📋 CAPA Generator": "capa", 
+        "⚠️ Nonconformance Reports": "ncr",
+        "📐 Design Controls": "design_controls",
+        "🔍 Risk Management": "risk_mgmt",
+        "📊 Audit Tools": "audit",
+        "💬 AI Consultant": "ai_chat",
+        "📚 Document Library": "docs",
+        "🎯 Compliance Checker": "compliance"
+    }
+    
+    selected_page = st.sidebar.selectbox("Select Module", list(pages.keys()))
+    page_key = pages[selected_page]
+    
+    # AI Model Selection in sidebar
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🤖 AI Configuration")
+    ai_model = st.sidebar.radio("Select AI Model", ["anthropic", "openai"], key="ai_model")
+    
+    # Main content area
+    if page_key == "dashboard":
+        show_dashboard(expert)
+    elif page_key == "capa":
+        show_capa_generator(expert, ai_model)
+    elif page_key == "ncr":
+        show_ncr_generator(expert, ai_model)
+    elif page_key == "design_controls":
+        show_design_controls(expert, ai_model)
+    elif page_key == "risk_mgmt":
+        show_risk_management(expert, ai_model)
+    elif page_key == "audit":
+        show_audit_tools(expert, ai_model)
+    elif page_key == "ai_chat":
+        show_ai_consultant(expert, ai_model)
+    elif page_key == "docs":
+        show_document_library(expert)
+    elif page_key == "compliance":
+        show_compliance_checker(expert, ai_model)
 
-# --- SIDEBAR NAVIGATION ---
-def render_sidebar():
-    """Render enhanced sidebar with comprehensive navigation."""
-    with st.sidebar:
-        st.markdown("### 🎯 Navigation")
-        
-        # User profile section
-        with st.expander("👤 User Profile", expanded=False):
-            st.session_state.user_role = st.selectbox(
-                "Your Role",
-                ["Quality Manager", "Quality Engineer", "Regulatory Affairs", "QA Analyst", "Management Representative"],
-                index=0
-            )
-            
-            company_name = st.text_input("Company Name", value=st.session_state.company_info.get('name', ''))
-            if company_name:
-                st.session_state.company_info['name'] = company_name
-        
-        # AI Model Selection
-        st.markdown("### 🤖 AI Configuration")
-        st.session_state.active_model = st.radio(
-            "Select AI Model",
-            ["anthropic", "openai", "auto"],
-            help="Auto mode uses the best model for each task"
-        )
-        
-        # Quick Actions
-        st.markdown("### ⚡ Quick Actions")
-        if st.button("🚨 Create CAPA", use_container_width=True):
-            st.session_state.current_tab = "CAPA Management"
-        
-        if st.button("📋 New Nonconformance", use_container_width=True):
-            st.session_state.current_tab = "Nonconformance"
-        
-        if st.button("🔍 Risk Assessment", use_container_width=True):
-            st.session_state.current_tab = "Risk Management"
-        
-        if st.button("📚 Training Record", use_container_width=True):
-            st.session_state.current_tab = "Training"
-        
-        # System Status
-        st.markdown("### 📊 System Status")
-        ai_status = "🟢 Active" if st.session_state.ai_manager else "🔴 Inactive"
-        st.write(f"AI Systems: {ai_status}")
-        
-        if st.session_state.ai_manager:
-            st.write(f"OpenAI: {'🟢' if st.session_state.ai_manager.openai_client else '🔴'}")
-            st.write(f"Anthropic: {'🟢' if st.session_state.ai_manager.anthropic_client else '🔴'}")
-
-# --- DASHBOARD TAB ---
-def render_dashboard_tab():
-    """Render comprehensive dashboard with KPIs and insights."""
-    st.markdown("## 📊 Quality Management Dashboard")
+def show_dashboard(expert):
+    st.header("📊 Quality Management Dashboard")
     
     # Key metrics row
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric(
-            label="🚨 Open CAPAs",
-            value="12",
-            delta="-2 from last month",
-            delta_color="inverse"
-        )
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Open CAPAs", "12", "-3")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.metric(
-            label="📋 Nonconformances",
-            value="8",
-            delta="+3 this week",
-            delta_color="inverse"
-        )
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Nonconformances", "8", "+2")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
-        st.metric(
-            label="✅ Compliance Score",
-            value="94%",
-            delta="+2% this quarter",
-            delta_color="normal"
-        )
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Compliance Score", "94%", "+1%")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col4:
-        st.metric(
-            label="🎯 Training Completion",
-            value="87%",
-            delta="+5% this month",
-            delta_color="normal"
-        )
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Overdue Items", "3", "-1")
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    # Charts row
+    # Charts
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### 📈 CAPA Trends")
-        # Sample data - replace with real data
-        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
-        opened = [15, 12, 18, 10, 8, 12]
-        closed = [10, 15, 16, 12, 15, 10]
+        st.subheader("CAPA Trend Analysis")
+        dates = pd.date_range(start='2024-01-01', periods=12, freq='M')
+        capa_data = pd.DataFrame({
+            'Month': dates,
+            'Opened': [5, 8, 6, 10, 7, 9, 12, 8, 6, 11, 9, 7],
+            'Closed': [3, 6, 8, 7, 9, 8, 10, 12, 8, 9, 11, 10]
+        })
         
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=months, y=opened, mode='lines+markers', name='Opened', line=dict(color='#ef4444')))
-        fig.add_trace(go.Scatter(x=months, y=closed, mode='lines+markers', name='Closed', line=dict(color='#10b981')))
-        fig.update_layout(height=300)
+        fig = px.line(capa_data, x='Month', y=['Opened', 'Closed'], 
+                     title="Monthly CAPA Activity")
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        st.markdown("### 🎯 Nonconformance Categories")
-        # Sample data
-        categories = ['Design Controls', 'Manufacturing', 'Supplier Quality', 'Documentation', 'Training']
-        values = [25, 35, 20, 15, 5]
+        st.subheader("Compliance by ISO Section")
+        compliance_data = pd.DataFrame({
+            'Section': ['4. QMS', '5. Management', '6. Resources', '7. Product', '8. Measurement'],
+            'Compliance': [98, 92, 95, 88, 94]
+        })
         
-        fig = px.pie(values=values, names=categories, height=300)
+        fig = px.bar(compliance_data, x='Section', y='Compliance',
+                    title="ISO 13485 Section Compliance", color='Compliance',
+                    color_continuous_scale='RdYlGn')
         st.plotly_chart(fig, use_container_width=True)
     
     # Recent activities
-    st.markdown("### 🔔 Recent Activities")
-    activities = [
-        {"time": "2 hours ago", "action": "CAPA-2024-001 created for supplier quality issue", "status": "new"},
-        {"time": "1 day ago", "action": "Training module 'Risk Management' completed by 15 employees", "status": "complete"},
-        {"time": "2 days ago", "action": "Nonconformance NC-2024-045 closed after verification", "status": "complete"},
-        {"time": "3 days ago", "action": "Internal audit scheduled for next week", "status": "pending"},
-        {"time": "1 week ago", "action": "Management review meeting conducted", "status": "complete"}
-    ]
-    
-    for activity in activities:
-        badge_class = {
-            "new": "warning-badge",
-            "complete": "success-badge",
-            "pending": "error-badge"
-        }.get(activity["status"], "success-badge")
-        
-        st.markdown(f"""
-        <div class="feature-card">
-            <span class="{badge_class}">{activity["status"].upper()}</span>
-            <strong>{activity["time"]}</strong>: {activity["action"]}
-        </div>
-        """, unsafe_allow_html=True)
+    st.subheader("📋 Recent Quality Activities")
+    activities = pd.DataFrame({
+        'Date': [datetime.now() - timedelta(days=x) for x in range(5)],
+        'Activity': ['CAPA-2024-001 Initiated', 'NCR-2024-015 Closed', 'Internal Audit Completed', 'Risk Assessment Updated', 'SOP Revised'],
+        'Status': ['Open', 'Closed', 'Complete', 'Complete', 'Under Review'],
+        'Priority': ['High', 'Medium', 'Low', 'Medium', 'High']
+    })
+    st.dataframe(activities, use_container_width=True)
 
-# --- EXPERT CONSULTANT TAB ---
-def render_expert_consultant_tab():
-    """AI-powered ISO13485 expert consultation interface."""
-    st.markdown("## 🤖 ISO13485 Expert Consultant")
-    st.markdown("*Ask me anything about ISO13485, medical device regulations, quality management, or get help with document generation.*")
+def show_capa_generator(expert, ai_model):
+    st.header("📋 CAPA Generator")
+    st.markdown("Generate ISO 13485 compliant Corrective and Preventive Action reports")
     
-    if not st.session_state.expert_consultant:
-        st.error("Expert consultant not available. Please check AI configuration.")
-        return
-    
-    # Chat interface
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Display chat history
-    for message in st.session_state.chat_history:
-        if message["role"] == "user":
-            st.markdown(f"""
-            <div class="chat-message">
-                <strong>You:</strong> {message["content"]}
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="ai-response">
-                <strong>ISO13485 Expert:</strong> {message["content"]}
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Input area
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        user_input = st.text_input(
-            "Ask your question:",
-            placeholder="e.g., How do I perform a management review? What are the CAPA requirements?",
-            key="expert_input"
-        )
-    
-    with col2:
-        if st.button("Send", key="send_expert"):
-            if user_input:
-                # Add user message
-                st.session_state.chat_history.append({"role": "user", "content": user_input})
-                
-                # Get AI response
-                with st.spinner("Consulting ISO13485 expert..."):
-                    response = st.session_state.expert_consultant.get_expert_advice(
-                        question=user_input,
-                        context={
-                            "user_role": st.session_state.user_role,
-                            "company": st.session_state.company_info
-                        },
-                        model=st.session_state.active_model
-                    )
-                
-                # Add AI response
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                st.rerun()
-    
-    # Quick consultation buttons
-    st.markdown("### 🎯 Quick Consultations")
-    
-    quick_questions = [
-        "What are the key requirements for Design Controls?",
-        "How do I conduct a Management Review?",
-        "What's required for CAPA effectiveness verification?",
-        "Explain risk management requirements for medical devices",
-        "What documentation is needed for supplier evaluation?"
-    ]
-    
-    cols = st.columns(2)
-    for i, question in enumerate(quick_questions):
-        with cols[i % 2]:
-            if st.button(question, key=f"quick_{i}"):
-                st.session_state.chat_history.append({"role": "user", "content": question})
-                with st.spinner("Consulting expert..."):
-                    response = st.session_state.expert_consultant.get_expert_advice(
-                        question=question,
-                        context={"user_role": st.session_state.user_role},
-                        model=st.session_state.active_model
-                    )
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                st.rerun()
-
-# --- DOCUMENT GENERATION TAB ---
-def render_document_generation_tab():
-    """Comprehensive document generation with templates."""
-    st.markdown("## 📄 Document Generation Center")
-    
-    # Document type selection
-    doc_categories = {
-        "🚨 CAPA Documents": [
-            "CAPA Request Form",
-            "CAPA Investigation Report", 
-            "CAPA Effectiveness Review",
-            "CAPA Closure Report"
-        ],
-        "📋 Nonconformance": [
-            "Nonconformance Report",
-            "Supplier Nonconformance",
-            "Customer Complaint Form",
-            "Material Review Board Report"
-        ],
-        "🔍 Audit & Assessment": [
-            "Internal Audit Checklist",
-            "Supplier Audit Report",
-            "Management Review Agenda",
-            "Regulatory Compliance Assessment"
-        ],
-        "📚 SOPs & Procedures": [
-            "Document Control Procedure",
-            "Training Procedure",
-            "Risk Management Procedure",
-            "Complaint Handling SOP"
-        ],
-        "🎯 Risk Management": [
-            "Risk Assessment Form",
-            "Risk Analysis Report",
-            "Post-Market Surveillance Plan",
-            "Clinical Evaluation Report"
-        ]
-    }
-    
-    selected_category = st.selectbox("Select Document Category", list(doc_categories.keys()))
-    selected_document = st.selectbox("Select Document Type", doc_categories[selected_category])
-    
-    # Document generation form
-    with st.form("document_generation_form"):
-        st.markdown(f"### Generate: {selected_document}")
-        
+    with st.form("capa_form"):
         col1, col2 = st.columns(2)
         
         with col1:
-            product_name = st.text_input("Product/Device Name")
-            product_id = st.text_input("Product ID/SKU")
-            department = st.selectbox("Department", ["Quality", "Engineering", "Manufacturing", "Regulatory", "Clinical"])
+            st.subheader("Basic Information")
+            capa_number = st.text_input("CAPA Number", value=f"CAPA-{datetime.now().strftime('%Y%m%d')}-001")
+            product_name = st.text_input("Product Name")
+            product_id = st.text_input("Product ID/SKU") 
+            department = st.selectbox("Department", ["Quality", "Engineering", "Manufacturing", "R&D"])
+            priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
+            
+        with col2:
+            st.subheader("Assignment")
+            assigned_to = st.text_input("Assigned To")
+            due_date = st.date_input("Due Date", value=datetime.now() + timedelta(days=30))
+            source = st.selectbox("Source", ["Internal Audit", "Customer Complaint", "Nonconformance", "Management Review", "Risk Assessment"])
+        
+        st.subheader("Problem Description")
+        issue_description = st.text_area("Issue Description", height=100,
+                                       placeholder="Describe the nonconformance, issue, or observation that requires corrective action...")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Root Cause Analysis")
+            root_cause = st.text_area("Root Cause", height=100,
+                                    placeholder="Provide thorough root cause analysis using systematic methodology...")
         
         with col2:
-            priority = st.selectbox("Priority", ["Low", "Medium", "High", "Critical"])
-            due_date = st.date_input("Due Date", value=datetime.now().date() + timedelta(days=30))
-            assigned_to = st.text_input("Assigned To")
+            st.subheader("Impact Assessment")
+            impact = st.text_area("Impact Assessment", height=100,
+                                placeholder="Assess potential impact on safety, efficacy, and compliance...")
         
-        issue_description = st.text_area("Issue Description / Background", height=150)
-        additional_context = st.text_area("Additional Context (optional)", height=100)
+        st.subheader("Actions")
+        corrective_action = st.text_area("Corrective Actions", height=100,
+                                       placeholder="Define specific actions to eliminate the root cause...")
+        preventive_action = st.text_area("Preventive Actions", height=100,
+                                       placeholder="Define actions to prevent recurrence...")
         
-        generate_button = st.form_submit_button("🚀 Generate Document", use_container_width=True)
+        # AI Enhancement options
+        st.subheader("🤖 AI Enhancement")
+        col1, col2 = st.columns(2)
+        with col1:
+            enhance_root_cause = st.checkbox("Enhance Root Cause Analysis")
+            enhance_actions = st.checkbox("Suggest Corrective Actions")
+        with col2:
+            enhance_preventive = st.checkbox("Suggest Preventive Actions") 
+            validate_compliance = st.checkbox("Validate ISO 13485 Compliance")
         
-        if generate_button and st.session_state.document_generator:
-            with st.spinner(f"Generating {selected_document}..."):
-                document_data = {
-                    "document_type": selected_document,
-                    "product_name": product_name,
-                    "product_id": product_id,
-                    "department": department,
-                    "priority": priority,
-                    "due_date": due_date.strftime("%Y-%m-%d"),
-                    "assigned_to": assigned_to,
-                    "issue_description": issue_description,
-                    "additional_context": additional_context,
-                    "generated_by": st.session_state.user_role,
-                    "generated_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
+        submitted = st.form_submit_button("Generate CAPA", type="primary")
+        
+        if submitted:
+            # Collect form data
+            capa_data = {
+                'capa_number': capa_number,
+                'product_name': product_name,
+                'product_id': product_id,
+                'department': department,
+                'priority': priority,
+                'assigned_to': assigned_to,
+                'due_date': due_date.strftime('%Y-%m-%d'),
+                'source': source,
+                'issue_description': issue_description,
+                'root_cause': root_cause,
+                'impact': impact,
+                'corrective_action': corrective_action,
+                'preventive_action': preventive_action,
+                'generated_date': datetime.now().strftime('%Y-%m-%d')
+            }
+            
+            # AI Enhancement
+            if any([enhance_root_cause, enhance_actions, enhance_preventive, validate_compliance]):
+                st.subheader("🤖 AI Analysis")
                 
-                try:
-                    generated_doc = st.session_state.document_generator.generate_document(
-                        document_type=selected_document,
-                        data=document_data,
-                        model=st.session_state.active_model
-                    )
-                    
-                    st.success(f"✅ {selected_document} generated successfully!")
-                    
-                    # Preview generated content
-                    with st.expander("📄 Document Preview", expanded=True):
-                        st.markdown(generated_doc['content'])
-                    
-                    # Download options
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # Generate Word document
-                        docx_buffer = st.session_state.document_generator.export_to_docx(generated_doc)
-                        st.download_button(
-                            label="📥 Download Word",
-                            data=docx_buffer.getvalue(),
-                            file_name=f"{selected_document.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        )
-                    
-                    with col2:
-                        # Generate PDF (if implemented)
-                        st.button("📥 Download PDF", disabled=True, help="PDF export coming soon")
-                    
-                    with col3:
-                        # Save to library
-                        if st.button("💾 Save to Library"):
-                            if "generated_documents" not in st.session_state:
-                                st.session_state.generated_documents = {}
-                            
-                            doc_id = f"{selected_document}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                            st.session_state.generated_documents[doc_id] = generated_doc
-                            st.success("Document saved to library!")
+                if enhance_root_cause and issue_description:
+                    prompt = f"""Based on this medical device quality issue: "{issue_description}", provide a comprehensive root cause analysis following ISO 13485 requirements. Use systematic methodology like 5 Whys or fishbone diagram."""
+                    with st.spinner("Enhancing root cause analysis..."):
+                        enhanced_rca = expert.get_ai_response(prompt, ai_model)
+                        st.markdown("**Enhanced Root Cause Analysis:**")
+                        st.markdown(enhanced_rca)
+                        if st.button("Use Enhanced Root Cause"):
+                            capa_data['root_cause'] = enhanced_rca
                 
-                except Exception as e:
-                    st.error(f"Failed to generate document: {str(e)}")
+                if enhance_actions and root_cause:
+                    prompt = f"""Given this root cause: "{root_cause}", suggest specific corrective actions that comply with ISO 13485 requirements. Actions should be measurable, time-bound, and eliminate the root cause."""
+                    with st.spinner("Generating corrective actions..."):
+                        suggested_actions = expert.get_ai_response(prompt, ai_model)
+                        st.markdown("**Suggested Corrective Actions:**")
+                        st.markdown(suggested_actions)
+                
+                if enhance_preventive and issue_description:
+                    prompt = f"""For this medical device issue: "{issue_description}", suggest preventive actions to prevent similar issues across all products/processes. Focus on systemic improvements per ISO 13485."""
+                    with st.spinner("Generating preventive actions..."):
+                        preventive_suggestions = expert.get_ai_response(prompt, ai_model)
+                        st.markdown("**Suggested Preventive Actions:**")
+                        st.markdown(preventive_suggestions)
+                
+                if validate_compliance:
+                    prompt = f"""Review this CAPA for ISO 13485:2016 compliance: {json.dumps(capa_data, indent=2)}. Check completeness, identify missing elements, and suggest improvements."""
+                    with st.spinner("Validating compliance..."):
+                        compliance_check = expert.get_ai_response(prompt, ai_model)
+                        st.markdown("**Compliance Validation:**")
+                        st.markdown(compliance_check)
+            
+            # Generate final document
+            st.subheader("📄 Generated CAPA Document")
+            capa_document = generate_capa_document(capa_data)
+            st.markdown(capa_document)
+            
+            # Download button
+            st.download_button(
+                label="Download CAPA Document",
+                data=capa_document,
+                file_name=f"{capa_number}_CAPA.md",
+                mime="text/markdown"
+            )
 
-# --- MAIN APPLICATION ---
-def main():
-    """Main application entry point."""
-    # Initialize systems
-    initialize_session_state()
+def generate_capa_document(data):
+    """Generate formatted CAPA document"""
+    return f"""
+# CORRECTIVE AND PREVENTIVE ACTION (CAPA) REQUEST
+
+## Document Information
+- **CAPA Number:** {data.get('capa_number', 'TBD')}
+- **Date Initiated:** {data.get('generated_date', datetime.now().strftime('%Y-%m-%d'))}
+- **Prepared By:** {data.get('assigned_to', 'TBD')}
+- **Department:** {data.get('department', 'Quality')}
+- **Priority:** {data.get('priority', 'Medium')}
+- **Due Date:** {data.get('due_date', 'TBD')}
+
+## Product Information
+- **Product Name:** {data.get('product_name', 'TBD')}
+- **Product ID/SKU:** {data.get('product_id', 'TBD')}
+- **Source:** {data.get('source', 'TBD')}
+
+## Problem Description
+**Issue Description:**
+{data.get('issue_description', 'Issue description to be provided')}
+
+**Impact Assessment:**
+{data.get('impact', 'Impact assessment to be provided')}
+
+## Root Cause Analysis
+**Root Cause:**
+{data.get('root_cause', 'Root cause analysis to be completed')}
+
+## Corrective Actions
+**Corrective Action Plan:**
+{data.get('corrective_action', 'Corrective actions to be determined')}
+
+**Implementation Timeline:** {data.get('due_date', 'TBD')}
+**Responsible Person:** {data.get('assigned_to', 'TBD')}
+
+## Preventive Actions
+**Preventive Action Plan:**
+{data.get('preventive_action', 'Preventive actions to be determined')}
+
+## Effectiveness Verification
+**Verification Method:** 
+- Monitoring and measurement
+- Internal audit verification
+- Management review
+
+**Success Criteria:** Elimination of root cause and prevention of recurrence
+
+**Verification Timeline:** 90 days post-implementation
+
+## Approval
+**Quality Manager Approval:**
+Name: _________________ Signature: _________________ Date: _______
+
+**Management Representative Approval:** 
+Name: _________________ Signature: _________________ Date: _______
+
+---
+*This document is controlled per ISO 13485:2016 Section 8.5.2 requirements*
+*Document generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+"""
+
+def show_ncr_generator(expert, ai_model):
+    st.header("⚠️ Nonconformance Report Generator")
+    st.markdown("Generate ISO 13485 compliant nonconformance reports")
     
-    # Render header
-    render_main_header()
+    # Implementation similar to CAPA generator but for NCRs
+    st.info("🚧 NCR Generator - Coming in next update")
+
+def show_design_controls(expert, ai_model):
+    st.header("📐 Design Controls Assistant")
+    st.markdown("ISO 13485 Section 7.3 Design Control Management")
     
-    # Initialize AI systems
-    ai_initialized = initialize_ai_systems()
+    st.info("🚧 Design Controls Module - Coming in next update")
+
+def show_risk_management(expert, ai_model):
+    st.header("🔍 Risk Management (ISO 14971)")
+    st.markdown("Integrated risk management for medical devices")
     
-    if not ai_initialized:
-        st.warning("Some AI features may be limited. Please configure API keys in Streamlit secrets.")
+    st.info("🚧 Risk Management Module - Coming in next update")
+
+def show_audit_tools(expert, ai_model):
+    st.header("📊 Internal Audit Tools")
+    st.markdown("ISO 13485 audit planning and execution tools")
     
-    # Render sidebar
-    render_sidebar()
+    st.info("🚧 Audit Tools - Coming in next update")
+
+def show_ai_consultant(expert, ai_model):
+    st.header("💬 AI ISO 13485 Consultant")
+    st.markdown(f"Chat with your AI consultant using **{ai_model.title()}**")
     
-    # Main content area with tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "📊 Dashboard",
-        "🤖 Expert Consultant", 
-        "📄 Document Generation",
-        "🚨 CAPA Management",
-        "📋 Nonconformance",
-        "🔍 Risk Management",
-        "📚 Training & Competency",
-        "⚙️ System Settings"
-    ])
+    # Initialize chat history
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
     
-    with tab1:
-        render_dashboard_tab()
+    # Chat interface
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
     
-    with tab2:
-        render_expert_consultant_tab()
+    # User input
+    if prompt := st.chat_input("Ask your ISO 13485 question..."):
+        # Add user message
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+        
+        # Get AI response
+        with st.chat_message("assistant"):
+            with st.spinner("Consulting ISO 13485 expertise..."):
+                enhanced_prompt = f"""
+                ISO 13485:2016 Question: {prompt}
+                
+                Please provide a detailed response based on ISO 13485:2016 requirements, including:
+                - Specific section references where applicable
+                - Practical implementation guidance
+                - Common pitfalls to avoid
+                - Best practices for medical device companies
+                """
+                
+                response = expert.get_ai_response(enhanced_prompt, ai_model)
+                st.write(response)
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+def show_document_library(expert):
+    st.header("📚 Document Library")
+    st.markdown("ISO 13485 templates and reference documents")
     
-    with tab3:
-        render_document_generation_tab()
+    # Document categories
+    tabs = st.tabs(["📋 Templates", "📖 Procedures", "🔍 Checklists", "📊 Forms"])
     
-    with tab4:
-        st.markdown("## 🚨 CAPA Management")
-        st.info("Enhanced CAPA management interface - Building on your existing functionality")
-        # Your existing CAPA functionality would be enhanced here
+    with tabs[0]:  # Templates
+        st.subheader("Document Templates")
+        for doc_type, description in expert.document_types.items():
+            with st.expander(f"{doc_type} - {description}"):
+                st.write(f"Template for {description}")
+                st.button(f"Generate {doc_type}", key=f"gen_{doc_type}")
     
-    with tab5:
-        st.markdown("## 📋 Nonconformance Management")
-        st.info("Comprehensive nonconformance tracking and management")
-        # New nonconformance functionality
+    with tabs[1]:  # Procedures
+        st.subheader("Standard Operating Procedures")
+        st.info("SOP templates for common ISO 13485 processes")
     
-    with tab6:
-        st.markdown("## 🔍 Risk Management")
-        st.info("Risk assessment and management tools")
-        # Risk management functionality
+    with tabs[2]:  # Checklists
+        st.subheader("Audit and Compliance Checklists")
+        st.info("Internal audit checklists by ISO 13485 section")
     
-    with tab7:
-        st.markdown("## 📚 Training & Competency")
-        st.info("Training management and competency tracking")
-        # Training functionality
+    with tabs[3]:  # Forms
+        st.subheader("Quality Forms")
+        st.info("Standardized forms for quality processes")
+
+def show_compliance_checker(expert, ai_model):
+    st.header("🎯 ISO 13485 Compliance Checker")
+    st.markdown("Comprehensive compliance assessment tool")
     
-    with tab8:
-        st.markdown("## ⚙️ System Settings")
-        st.info("System configuration and preferences")
-        # Settings functionality
+    # Section-by-section compliance check
+    st.subheader("Compliance Assessment by Section")
+    
+    sections = {
+        "4. Quality Management System": ["4.1 General", "4.2 Documentation"],
+        "5. Management Responsibility": ["5.1 Management Commitment", "5.2 Customer Focus", "5.3 Quality Policy"],
+        "6. Resource Management": ["6.1 Resources", "6.2 Human Resources", "6.3 Infrastructure"],
+        "7. Product Realization": ["7.1 Planning", "7.2 Customer Processes", "7.3 Design Controls"],
+        "8. Measurement & Improvement": ["8.1 General", "8.2 Monitoring", "8.3 Nonconforming Product", "8.4 Analysis", "8.5 Improvement"]
+    }
+    
+    for section, subsections in sections.items():
+        with st.expander(section):
+            for subsection in subsections:
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(subsection)
+                with col2:
+                    status = st.selectbox("Status", ["Compliant", "Partial", "Non-Compliant"], key=f"status_{subsection}")
+                with col3:
+                    if st.button("Check", key=f"check_{subsection}"):
+                        prompt = f"Provide a detailed compliance checklist for ISO 13485:2016 {subsection}. Include specific requirements, documentation needed, and common gaps."
+                        with st.spinner("Analyzing compliance requirements..."):
+                            response = expert.get_ai_response(prompt, ai_model)
+                            st.markdown(f"**{subsection} Requirements:**")
+                            st.markdown(response)
 
 if __name__ == "__main__":
     main()
