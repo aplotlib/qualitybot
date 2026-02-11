@@ -541,7 +541,219 @@ def get_classification_info(market_code, profile):
     return market_classes.get(class_key) or market_classes.get("Class II") or market_classes.get("Class I")
 
 
-def build_system_prompt(profile, gap_statuses):
+REQUIREMENT_TIERS = {
+    "BARE_MINIMUM": {
+        "label": "Bare Minimum",
+        "description": "Legally required. You cannot sell without these.",
+        "color": "#dc2626",
+    },
+    "HIGHLY_SUGGESTED": {
+        "label": "Highly Suggested",
+        "description": "Not strictly law, but FDA/Notified Bodies will question you without them. Industry standard practice.",
+        "color": "#f59e0b",
+    },
+    "NICE_TO_HAVE": {
+        "label": "Nice to Have",
+        "description": "Strengthens your submission and differentiates serious companies. Good practice.",
+        "color": "#3b82f6",
+    },
+    "NOT_NEEDED": {
+        "label": "Not Needed",
+        "description": "Does not apply to your device based on its profile.",
+        "color": "#94a3b8",
+    },
+}
+
+
+def get_tiered_requirements(p):
+    """Classify all requirements into 4 tiers based on device profile.
+    Returns list of dicts: {name, tier, category, reference, detail, timeline, cost}
+    """
+    reqs = []
+    is_us = "US" in p.get("target_markets", ["US"]) or not p.get("target_markets")
+    is_eu = "EU" in p.get("target_markets", [])
+    is_sterile = p.get("sterile", False)
+    has_sw = p.get("has_software", False)
+    is_elec = p.get("is_electrical", False)
+    contact = p.get("contact_type", "")
+    has_contact = contact and contact != "none"
+    duration = p.get("contact_duration", "")
+    is_prolonged = duration in ("prolonged", "permanent")
+    is_implant = p.get("is_implantable", False) or contact == "implant"
+    is_blood = contact in ("blood-path-indirect", "blood-contact")
+
+    us_class = p.get("class_us", "")
+    needs_510k = "Class II" in us_class or "510(k) required" in us_class
+
+    # --- REGULATORY SUBMISSIONS ---
+    if is_us:
+        reqs.append({"name": "Establishment Registration & Device Listing", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "21 CFR 807", "detail": "Annual registration with FDA, list all devices", "timeline": "Immediate", "cost": "$7,653/yr (FY2025)"})
+        if needs_510k:
+            reqs.append({"name": "510(k) Premarket Notification", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "21 CFR 807 Subpart E", "detail": "Demonstrate substantial equivalence to predicate device", "timeline": "3-12 months", "cost": "$22K small biz / $88K standard"})
+        elif "De Novo" in us_class:
+            reqs.append({"name": "De Novo Classification Request", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "21 CFR 860.260", "detail": "For novel Class II devices without a predicate", "timeline": "6-18 months", "cost": "$~110K+"})
+        else:
+            reqs.append({"name": "510(k) Premarket Notification", "tier": "NOT_NEEDED", "category": "Regulatory", "reference": "21 CFR 807", "detail": "Class I exempt -- no 510(k) required", "timeline": "N/A", "cost": "N/A"})
+
+        reqs.append({"name": "Quality System (21 CFR 820 / QMSR)", "tier": "BARE_MINIMUM", "category": "QMS", "reference": "21 CFR 820 / ISO 13485", "detail": "Full quality management system -- design controls, CAPA, production controls, etc.", "timeline": "6-12 months to establish", "cost": "$50K-200K initial setup"})
+        reqs.append({"name": "Labeling per 21 CFR 801", "tier": "BARE_MINIMUM", "category": "Labeling", "reference": "21 CFR 801", "detail": "Device labels, instructions for use, UDI", "timeline": "2-4 weeks", "cost": "$2K-10K"})
+        reqs.append({"name": "UDI (Unique Device Identification)", "tier": "BARE_MINIMUM", "category": "Labeling", "reference": "21 CFR 830", "detail": "Assign and register UDI-DI in GUDID", "timeline": "2-4 weeks", "cost": "$500-2K"})
+        reqs.append({"name": "MDR / Adverse Event Reporting", "tier": "BARE_MINIMUM", "category": "Post-Market", "reference": "21 CFR 803", "detail": "Mandatory reporting of deaths, serious injuries, malfunctions", "timeline": "Ongoing", "cost": "Part of QMS"})
+
+    if is_eu:
+        reqs.append({"name": "EU MDR Technical Documentation (Annex II/III)", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "EU MDR 2017/745", "detail": "Full technical file including clinical evaluation", "timeline": "12-24 months", "cost": "EUR 50K-200K"})
+        reqs.append({"name": "Authorized Representative in EU", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "EU MDR Art. 11", "detail": "Required for non-EU manufacturers", "timeline": "1-2 months", "cost": "EUR 5K-15K/yr"})
+        reqs.append({"name": "EUDAMED Registration", "tier": "BARE_MINIMUM", "category": "Regulatory", "reference": "EU MDR Art. 29-34", "detail": "Register in European database on medical devices", "timeline": "1-2 months", "cost": "Included with NB fees"})
+
+    for mkt_code in p.get("target_markets", []):
+        if mkt_code not in ("US", "EU"):
+            mkt = MARKETS.get(mkt_code, {})
+            reqs.append({"name": f"{mkt.get('name', mkt_code)} Market Registration", "tier": "BARE_MINIMUM" if mkt_code in p.get("target_markets", []) else "NICE_TO_HAVE", "category": "Regulatory", "reference": f"{mkt.get('agency', '')} requirements", "detail": f"Market authorization for {mkt.get('name', mkt_code)}", "timeline": "3-18 months", "cost": "Varies"})
+
+    # --- DESIGN & TESTING ---
+    reqs.append({"name": "Risk Management File (ISO 14971)", "tier": "BARE_MINIMUM", "category": "Design", "reference": "ISO 14971:2019", "detail": "Hazard analysis, risk assessment, risk controls, residual risk evaluation", "timeline": "Ongoing - lifecycle", "cost": "$10K-50K"})
+    reqs.append({"name": "Design Controls / Design History File", "tier": "BARE_MINIMUM", "category": "Design", "reference": "ISO 13485 Clause 7.3", "detail": "Design inputs, outputs, reviews, V&V, transfer, change control", "timeline": "Throughout development", "cost": "Part of development"})
+    reqs.append({"name": "Essential Performance Testing", "tier": "BARE_MINIMUM", "category": "Testing", "reference": "Product-specific standards", "detail": "Verify device performs as intended under normal and fault conditions", "timeline": "4-12 weeks", "cost": "$10K-50K"})
+
+    if needs_510k:
+        reqs.append({"name": "Predicate Device Comparison", "tier": "BARE_MINIMUM", "category": "510(k)", "reference": "21 CFR 807.87", "detail": "Substantial equivalence argument comparing to predicate", "timeline": "2-4 weeks", "cost": "Part of 510(k) prep"})
+
+    # Biocompatibility
+    if has_contact:
+        reqs.append({"name": "Biocompatibility Testing (ISO 10993)", "tier": "BARE_MINIMUM", "category": "Testing", "reference": "ISO 10993-1:2018", "detail": "Biological evaluation based on contact type and duration", "timeline": "8-26 weeks", "cost": "$15K-100K+"})
+        reqs.append({"name": "Cytotoxicity (ISO 10993-5)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-5", "detail": "In-vitro cell toxicity test -- required for ALL patient-contact devices", "timeline": "2-4 weeks", "cost": "$3K-5K"})
+        reqs.append({"name": "Sensitization (ISO 10993-10)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-10", "detail": "Allergic reaction potential -- LLNA or GPMT", "timeline": "4-8 weeks", "cost": "$5K-10K"})
+        reqs.append({"name": "Irritation (ISO 10993-10/23)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-10/23", "detail": "Skin/mucosal irritation assessment", "timeline": "2-6 weeks", "cost": "$3K-8K"})
+        if is_prolonged:
+            reqs.append({"name": "Systemic Toxicity (ISO 10993-11)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-11", "detail": "Required for prolonged/permanent contact devices", "timeline": "4-12 weeks", "cost": "$10K-25K"})
+            reqs.append({"name": "Genotoxicity (ISO 10993-3)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-3", "detail": "Required for prolonged/permanent contact devices", "timeline": "6-12 weeks", "cost": "$8K-15K"})
+        else:
+            reqs.append({"name": "Systemic Toxicity (ISO 10993-11)", "tier": "NOT_NEEDED", "category": "Biocompatibility", "reference": "ISO 10993-11", "detail": "Only for prolonged (>24h) or permanent contact", "timeline": "N/A", "cost": "N/A"})
+            reqs.append({"name": "Genotoxicity (ISO 10993-3)", "tier": "NOT_NEEDED", "category": "Biocompatibility", "reference": "ISO 10993-3", "detail": "Only for prolonged (>24h) or permanent contact", "timeline": "N/A", "cost": "N/A"})
+        if is_implant:
+            reqs.append({"name": "Implantation Testing (ISO 10993-6)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-6", "detail": "Required for implantable devices", "timeline": "12-26 weeks", "cost": "$20K-50K"})
+        if is_blood:
+            reqs.append({"name": "Hemocompatibility (ISO 10993-4)", "tier": "BARE_MINIMUM", "category": "Biocompatibility", "reference": "ISO 10993-4", "detail": "Required for blood-contacting devices", "timeline": "4-8 weeks", "cost": "$10K-25K"})
+    else:
+        reqs.append({"name": "Biocompatibility Testing (ISO 10993)", "tier": "NOT_NEEDED", "category": "Testing", "reference": "ISO 10993", "detail": "No patient contact -- biocompatibility not required", "timeline": "N/A", "cost": "N/A"})
+
+    # Electrical safety
+    if is_elec:
+        reqs.append({"name": "Electrical Safety Testing (IEC 60601-1)", "tier": "BARE_MINIMUM", "category": "Testing", "reference": "IEC 60601-1:2005+A1+A2", "detail": "Basic safety and essential performance for medical electrical equipment", "timeline": "4-8 weeks", "cost": "$15K-40K"})
+        reqs.append({"name": "EMC Testing (IEC 60601-1-2)", "tier": "BARE_MINIMUM", "category": "Testing", "reference": "IEC 60601-1-2:2014+A1", "detail": "Electromagnetic compatibility -- emissions and immunity", "timeline": "4-8 weeks", "cost": "$10K-25K"})
+    else:
+        reqs.append({"name": "Electrical Safety (IEC 60601-1)", "tier": "NOT_NEEDED", "category": "Testing", "reference": "IEC 60601-1", "detail": "Device is not electrical/electronic", "timeline": "N/A", "cost": "N/A"})
+        reqs.append({"name": "EMC Testing (IEC 60601-1-2)", "tier": "NOT_NEEDED", "category": "Testing", "reference": "IEC 60601-1-2", "detail": "Device is not electrical/electronic", "timeline": "N/A", "cost": "N/A"})
+
+    # Software
+    if has_sw:
+        reqs.append({"name": "Software Lifecycle (IEC 62304)", "tier": "BARE_MINIMUM", "category": "Software", "reference": "IEC 62304:2006+A1:2015", "detail": "Software development planning, architecture, testing, maintenance", "timeline": "Throughout development", "cost": "Part of development"})
+        reqs.append({"name": "Cybersecurity Documentation", "tier": "HIGHLY_SUGGESTED", "category": "Software", "reference": "FDA Cybersecurity Guidance", "detail": "Threat modeling, SBOM, vulnerability management", "timeline": "4-8 weeks", "cost": "$10K-30K"})
+    else:
+        reqs.append({"name": "Software Lifecycle (IEC 62304)", "tier": "NOT_NEEDED", "category": "Software", "reference": "IEC 62304", "detail": "Device has no software component", "timeline": "N/A", "cost": "N/A"})
+
+    # Sterilization
+    if is_sterile:
+        method = p.get("sterilization_method", "")
+        reqs.append({"name": "Bioburden Testing (ISO 11737-1)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ISO 11737-1", "detail": "Determine microbial load before sterilization", "timeline": "2-4 weeks", "cost": "$3K-8K"})
+        reqs.append({"name": "Sterility Testing (ISO 11737-2)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ISO 11737-2", "detail": "Verify sterility assurance level (SAL 10^-6)", "timeline": "2-4 weeks", "cost": "$3K-8K"})
+        reqs.append({"name": "Packaging Validation (ISO 11607)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ISO 11607-1/-2", "detail": "Sterile barrier system materials and seal validation", "timeline": "4-12 weeks", "cost": "$10K-30K"})
+        reqs.append({"name": "Accelerated Aging / Shelf Life (ASTM F1980)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ASTM F1980", "detail": "Validate shelf life claim for sterile product", "timeline": "8-16 weeks accelerated", "cost": "$5K-15K"})
+        if method == "EO":
+            reqs.append({"name": "EO Sterilization Validation (ISO 11135)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ISO 11135:2014", "detail": "Full IQ/OQ/PQ for ethylene oxide sterilization", "timeline": "8-16 weeks", "cost": "$20K-60K"})
+        elif method in ("gamma", "e-beam"):
+            reqs.append({"name": "Radiation Sterilization Validation (ISO 11137)", "tier": "BARE_MINIMUM", "category": "Sterilization", "reference": "ISO 11137 Series", "detail": "Dose audit and validation for gamma/e-beam sterilization", "timeline": "8-12 weeks", "cost": "$15K-40K"})
+    else:
+        reqs.append({"name": "Sterilization Validation", "tier": "NOT_NEEDED", "category": "Sterilization", "reference": "ISO 11135/11137", "detail": "Device is not supplied sterile", "timeline": "N/A", "cost": "N/A"})
+
+    # --- HIGHLY SUGGESTED ---
+    reqs.append({"name": "Usability Engineering (IEC 62366-1)", "tier": "HIGHLY_SUGGESTED", "category": "Design", "reference": "IEC 62366-1:2015+A1:2020", "detail": "Use-related risk analysis, formative and summative evaluations", "timeline": "8-16 weeks", "cost": "$15K-50K"})
+    reqs.append({"name": "Clinical Evaluation / Literature Review", "tier": "HIGHLY_SUGGESTED", "category": "Clinical", "reference": "MEDDEV 2.7/1 rev 4 / FDA Guidance", "detail": "Demonstrate clinical evidence through literature or clinical data", "timeline": "4-16 weeks", "cost": "$10K-40K"})
+    reqs.append({"name": "Shelf Life / Stability Testing", "tier": "HIGHLY_SUGGESTED" if not is_sterile else "BARE_MINIMUM", "category": "Testing", "reference": "ASTM F1980 / internal protocol", "detail": "Validate claimed shelf life under real-time or accelerated conditions", "timeline": "8-52 weeks", "cost": "$5K-20K"})
+    reqs.append({"name": "Supplier Quality Agreements", "tier": "HIGHLY_SUGGESTED", "category": "QMS", "reference": "ISO 13485 Clause 7.4", "detail": "Formal quality agreements with contract manufacturers and key suppliers", "timeline": "2-4 weeks", "cost": "$2K-5K legal review"})
+    reqs.append({"name": "Post-Market Surveillance Plan", "tier": "HIGHLY_SUGGESTED", "category": "Post-Market", "reference": "EU MDR Art. 83-86 / FDA PMS Guidance", "detail": "Systematic plan for monitoring device performance post-launch", "timeline": "2-4 weeks", "cost": "Part of QMS"})
+
+    # --- NICE TO HAVE ---
+    reqs.append({"name": "Transportation Simulation (ISTA/ASTM D4169)", "tier": "NICE_TO_HAVE", "category": "Testing", "reference": "ISTA 3A / ASTM D4169", "detail": "Simulate shipping conditions -- vibration, drop, compression", "timeline": "2-4 weeks", "cost": "$3K-10K"})
+    reqs.append({"name": "Human Factors Validation Study", "tier": "NICE_TO_HAVE" if not is_elec else "HIGHLY_SUGGESTED", "category": "Design", "reference": "FDA HF Guidance / IEC 62366-1", "detail": "Formal summative usability study with representative users", "timeline": "4-8 weeks", "cost": "$20K-80K"})
+    reqs.append({"name": "Environmental Testing (Temp/Humidity)", "tier": "NICE_TO_HAVE", "category": "Testing", "reference": "IEC 60068 Series", "detail": "Verify performance across environmental extremes", "timeline": "2-4 weeks", "cost": "$5K-15K"})
+    reqs.append({"name": "Competitor Benchmarking Analysis", "tier": "NICE_TO_HAVE", "category": "Design", "reference": "Internal", "detail": "Systematic comparison against marketed predicate/competitor devices", "timeline": "2-4 weeks", "cost": "$5K-10K"})
+
+    return reqs
+
+
+FIVETEN_K_GUIDANCE = {
+    "predicate_search": {
+        "title": "Finding a Predicate Device",
+        "steps": [
+            "Search FDA 510(k) database at accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/pmn.cfm",
+            "Search by product code, device name, or applicant",
+            "Identify devices with the SAME intended use as yours",
+            "Confirm similar technological characteristics (materials, design, energy source)",
+            "Document your substantial equivalence (SE) argument",
+            "Check if the predicate has any 510(k) enforcement actions or recalls",
+        ],
+    },
+    "substantial_equivalence": {
+        "title": "Substantial Equivalence Comparison",
+        "comparison_areas": [
+            {"area": "Intended Use / Indications for Use", "description": "Must be the same as predicate. Different intended use = no SE.", "required": True},
+            {"area": "Technological Characteristics", "description": "Materials, design, energy source. Different tech must not raise new safety/effectiveness questions.", "required": True},
+            {"area": "Performance Data", "description": "Bench testing showing equivalent or superior performance to predicate.", "required": True},
+            {"area": "Biocompatibility", "description": "Required if device contacts patient. Compare materials to predicate.", "required": False},
+            {"area": "Software / Firmware", "description": "Required if device contains software. Level of concern and hazard analysis.", "required": False},
+            {"area": "Sterilization", "description": "Required if device is supplied sterile. Compare method to predicate.", "required": False},
+            {"area": "Electrical Safety / EMC", "description": "Required if electrical. IEC 60601-1 testing.", "required": False},
+            {"area": "Labeling", "description": "Proposed labels and IFU. Must match intended use claims.", "required": True},
+        ],
+    },
+    "submission_sections": [
+        {"name": "Cover Letter", "tier": "BARE_MINIMUM", "detail": "Contact info, device name, regulatory class, product code"},
+        {"name": "Indications for Use Statement (FDA Form 3881)", "tier": "BARE_MINIMUM", "detail": "Signed statement matching predicate's IFU"},
+        {"name": "510(k) Summary or Statement", "tier": "BARE_MINIMUM", "detail": "Summary of SE determination (most choose summary)"},
+        {"name": "Truthful and Accuracy Statement", "tier": "BARE_MINIMUM", "detail": "Signed statement that all information is truthful"},
+        {"name": "Device Description", "tier": "BARE_MINIMUM", "detail": "Complete description including materials, dimensions, principles of operation"},
+        {"name": "Substantial Equivalence Comparison", "tier": "BARE_MINIMUM", "detail": "Side-by-side comparison table with predicate"},
+        {"name": "Proposed Labeling", "tier": "BARE_MINIMUM", "detail": "Labels, IFU, packaging -- must be final or near-final"},
+        {"name": "Performance Testing -- Bench", "tier": "BARE_MINIMUM", "detail": "Test reports demonstrating performance equivalent to predicate"},
+        {"name": "Biocompatibility", "tier": "conditional", "condition": "patient-contact", "detail": "ISO 10993 evaluation or testing data"},
+        {"name": "Sterilization", "tier": "conditional", "condition": "sterile", "detail": "Validation summary and SAL demonstration"},
+        {"name": "Software Documentation", "tier": "conditional", "condition": "software", "detail": "Level of concern, hazard analysis, V&V summary per IEC 62304"},
+        {"name": "Electrical Safety / EMC", "tier": "conditional", "condition": "electrical", "detail": "IEC 60601-1 and 60601-1-2 test reports"},
+        {"name": "Clinical Data", "tier": "HIGHLY_SUGGESTED", "detail": "Clinical literature review or clinical study data supporting safety/effectiveness"},
+        {"name": "Financial Certification or Disclosure (Form 3454/3455)", "tier": "BARE_MINIMUM", "detail": "Disclosure of financial interests with clinical investigators"},
+    ],
+}
+
+
+PDAC_HCPCS_GUIDANCE = {
+    "overview": "The Pricing, Data Analysis and Coding (PDAC) contractor reviews products and assigns HCPCS codes for Medicare/Medicaid billing. A Coding Verification Review confirms the correct billing code for your device.",
+    "common_codes": {
+        "Mobility & Walking Aids": {"range": "E0100-E0159", "examples": "Canes, crutches, walkers, rollators", "device_types": ["assistive", "mobility", "walking-aid"]},
+        "Bathroom Safety": {"range": "E0160-E0175", "examples": "Sitz baths, commodes, bath benches", "device_types": ["assistive"]},
+        "Hospital Beds": {"range": "E0250-E0373", "examples": "Hospital beds, mattresses, bed accessories", "device_types": ["assistive"]},
+        "Respiratory / CPAP / Nebulizers": {"range": "E0424-E0601", "examples": "CPAP devices, nebulizers, oxygen equipment, humidifiers", "device_types": ["respiratory", "nebulizer", "CPAP-mask", "sleep-therapy"]},
+        "Patient Lifts": {"range": "E0600-E0770", "examples": "Patient lifts, standing systems, slings, transfer boards", "device_types": ["assistive", "transfer-hoist"]},
+        "Wheelchairs": {"range": "E0950-K0108", "examples": "Manual/power wheelchairs, accessories, cushions", "device_types": ["assistive", "mobility"]},
+        "Orthotic Devices": {"range": "L0100-L4999", "examples": "Knee braces, back supports, ankle orthotics, cervical collars", "device_types": ["orthotic"]},
+        "Prosthetic Devices": {"range": "L5000-L9999", "examples": "Limb prosthetics, ocular prosthetics, breast prostheses", "device_types": ["prosthetic"]},
+    },
+    "submission_requirements": [
+        {"name": "PDAC Coding Verification Review Request Form", "tier": "BARE_MINIMUM", "detail": "Official form requesting code determination from PDAC contractor"},
+        {"name": "Product Specifications & Description", "tier": "BARE_MINIMUM", "detail": "Complete technical specifications, materials, dimensions, weight capacity"},
+        {"name": "Product Photos / Diagrams", "tier": "BARE_MINIMUM", "detail": "Clear photos from multiple angles showing the device and key features"},
+        {"name": "Marketing Materials / Catalog Page", "tier": "BARE_MINIMUM", "detail": "Published marketing materials showing intended use and claims"},
+        {"name": "Instructions for Use (IFU)", "tier": "BARE_MINIMUM", "detail": "Complete user instructions showing setup, use, and maintenance"},
+        {"name": "FDA 510(k) Clearance Letter", "tier": "HIGHLY_SUGGESTED", "detail": "If device is 510(k) cleared, include the clearance letter. Strongly supports coding."},
+        {"name": "Clinical Evidence / Literature", "tier": "HIGHLY_SUGGESTED", "detail": "Published studies or clinical data supporting medical necessity claims"},
+        {"name": "Certificate of Medical Necessity (CMN) Template", "tier": "HIGHLY_SUGGESTED", "detail": "Pre-formatted CMN template for prescribers to complete"},
+        {"name": "Comparison to Existing Coded Products", "tier": "NICE_TO_HAVE", "detail": "Show how your device compares to products already assigned the target HCPCS code"},
+        {"name": "Medicare LCD/NCD References", "tier": "NICE_TO_HAVE", "detail": "Reference applicable Local/National Coverage Determinations supporting reimbursement"},
+    ],
+}
+
+
+def build_system_prompt(profile, gap_statuses, workflow_context=""):
     """Build the AI advisor system prompt with product context and full standards knowledge."""
     from src.standards_knowledge import build_knowledge_context, FDA_AUDIT_CHECKLIST
 
@@ -603,4 +815,4 @@ When asked about any of the integrated standards above, draw from your detailed 
 When asked about internal audits or audit checklists, reference the FDA QSR/QMSR/ISO 13485 audit checklist with specific item numbers, ISO references, and auditor notes.
 
 --- INTEGRATED STANDARDS KNOWLEDGE BASE ---
-{knowledge_context}"""
+{knowledge_context}""" + (f"\n\nThe user is currently working on: {workflow_context}. Tailor your responses to be directly relevant to this task." if workflow_context else "")
