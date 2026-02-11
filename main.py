@@ -1,1103 +1,720 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, date, timedelta
-import io
-from typing import Dict, List, Optional, Any, Union
+from typing import List, Dict
 import openai
-import anthropic
-import json
-import base64
-import os
-import docx
-from docx import Document
-from docx.shared import Inches
-import mammoth
-import PyPDF2
-from PIL import Image
-import zipfile
 
-# Import our comprehensive ISO knowledge module
-# from iso13485_complete_module import ISO13485CompleteKnowledge, get_iso_knowledge_base, create_ai_enhanced_prompt
-
-# Configure page
-st.set_page_config(
-    page_title="ISO 13485 Expert Consultant",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
+from src.regulatory_data import (
+    MARKETS,
+    ISO_13485_CLAUSES,
+    STANDARDS_MAP,
+    GAP_ANALYSIS_ITEMS,
+    get_applicable_standards,
+    get_applicable_tests,
+    get_gap_stats,
+    get_classification_info,
+    build_system_prompt,
+)
+from src.standards_knowledge import (
+    ALL_STANDARDS_KNOWLEDGE,
+    FDA_AUDIT_CHECKLIST,
+    DOCUMENT_REGISTRY,
+    search_standards_knowledge,
+    get_audit_checklist_for_clause,
 )
 
-# Custom CSS for enhanced medical device theme
+# ══════════════════════════════════════════════════════════════════
+# PAGE CONFIG
+# ══════════════════════════════════════════════════════════════════
+
+st.set_page_config(
+    page_title="RegIntel - Medical Device Regulatory Intelligence",
+    page_icon="R",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ══════════════════════════════════════════════════════════════════
+# CUSTOM CSS
+# ══════════════════════════════════════════════════════════════════
+
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    
-    .regulatory-menu {
-        background: #f8f9ff;
-        border: 1px solid #e1e5f2;
-        border-radius: 8px;
-        padding: 0.5rem;
-        margin: 1rem 0;
-        text-align: center;
-    }
-    
-    .regulatory-menu a {
-        display: inline-block;
-        margin: 0 10px;
-        padding: 8px 16px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white !important;
-        text-decoration: none;
-        border-radius: 5px;
-        font-weight: bold;
-        font-size: 0.9rem;
-    }
-    
-    .regulatory-menu a:hover {
-        background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
-        transform: translateY(-2px);
-        transition: all 0.3s ease;
-    }
-    
-    .metric-card {
-        background: white;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #667eea;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-    }
-    
-    .iso-section {
-        background: #f8f9ff;
-        border: 1px solid #e1e5f2;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
-    
-    .dhf-upload-area {
-        border: 2px dashed #667eea;
-        border-radius: 10px;
-        padding: 2rem;
-        text-align: center;
-        background: #f8f9ff;
-        margin: 1rem 0;
-    }
-    
-    .file-preview {
-        background: white;
-        border: 1px solid #e1e5f2;
-        border-radius: 5px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-    }
-    
-    .compliance-status {
-        padding: 0.3rem 0.8rem;
-        border-radius: 15px;
-        font-weight: bold;
-        color: white;
-    }
-    
-    .status-compliant { background-color: #28a745; }
-    .status-partial { background-color: #ffc107; color: black; }
-    .status-non-compliant { background-color: #dc3545; }
-    
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 5px;
-        padding: 0.5rem 1rem;
-        font-weight: bold;
-    }
-    
-    .document-card {
-        border: 2px solid #e1e5f2;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 1rem 0;
-        background: white;
-    }
-    
-    .ai-enhancement-panel {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
+
+.block-container { padding-top: 1rem; }
+
+.top-bar {
+    background: #0a1628;
+    padding: 12px 24px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #1e3a5f;
+}
+.top-bar .logo {
+    width: 32px; height: 32px; border-radius: 6px;
+    background: linear-gradient(135deg, #38bdf8, #3b82f6);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700; color: #fff;
+}
+.top-bar .title { color: #fff; font-weight: 700; font-size: 16px; font-family: 'Source Serif 4', Georgia, serif; }
+.top-bar .subtitle { color: #475569; font-size: 12px; margin-left: 6px; }
+
+.hero {
+    background: linear-gradient(135deg, #0a1628 0%, #1a2d50 50%, #0f2040 100%);
+    border-radius: 16px; padding: 32px 36px; color: #fff;
+    position: relative; overflow: hidden; margin-bottom: 1.5rem;
+}
+.hero h2 { font-size: 24px; font-weight: 700; margin: 0; font-family: 'Source Serif 4', Georgia, serif; }
+.hero p { color: #94a3b8; margin-top: 8px; font-size: 14px; line-height: 1.6; }
+
+.stat-card {
+    background: #fff; border-radius: 12px;
+    border: 1px solid #e2e8f0; padding: 18px 20px;
+    border-left: 4px solid var(--accent, #3b82f6);
+}
+.stat-card .label { font-size: 12px; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-card .value { font-size: 22px; font-weight: 700; color: #0f172a; margin-top: 4px; font-family: 'Source Serif 4', Georgia, serif; }
+.stat-card .sublabel { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+
+.market-card {
+    padding: 14px 16px; border-radius: 10px;
+    border: 1px solid #e2e8f0; background: #fafafa;
+    transition: all 0.2s;
+}
+.market-card.active { border-color: var(--mcolor, #3b82f6); background: color-mix(in srgb, var(--mcolor, #3b82f6) 5%, white); }
+.market-card .flag { font-size: 20px; }
+.market-card .name { font-weight: 600; font-size: 13px; color: #0f172a; }
+.market-card .agency { font-size: 12px; color: #64748b; }
+
+.section-header {
+    font-size: 18px; font-weight: 600; color: #0f172a;
+    font-family: 'Source Serif 4', Georgia, serif;
+    margin: 0 0 16px 0;
+}
+
+.critical-badge {
+    background: #fee2e2; color: #dc2626;
+    padding: 1px 6px; border-radius: 4px;
+    font-size: 10px; font-weight: 700;
+    margin-left: 6px;
+}
+
+.std-category {
+    color: #fff; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    white-space: nowrap;
+}
 </style>
 """, unsafe_allow_html=True)
 
-class EnhancedISO13485Expert:
-    """Enhanced ISO 13485 Expert with complete standard knowledge and DHF generation"""
-    
-    def __init__(self):
-        self.anthropic_client = None
-        self.openai_client = None
-        # self.iso_knowledge = get_iso_knowledge_base()
-        self._initialize_ai_clients()
-        
-        # Regulatory websites
-        self.regulatory_sites = {
-            "FDA": "https://www.fda.gov/medical-devices",
-            "EU MDR": "https://ec.europa.eu/health/md_sector/overview_en",
-            "Health Canada": "https://www.canada.ca/en/health-canada/services/drugs-health-products/medical-devices.html",
-            "TGA (Australia)": "https://www.tga.gov.au/products/medical-devices",
-            "PMDA (Japan)": "https://www.pmda.go.jp/english/review-services/outline/0002.html",
-            "COFEPRIS (Mexico)": "https://www.gob.mx/cofepris",
-            "ANVISA (Brazil)": "https://www.gov.br/anvisa/pt-br",
-            "INVIMA (Colombia)": "https://www.invima.gov.co/"
-        }
-        
-        # DHF required sections per FDA 21 CFR 820.30
-        self.dhf_sections = {
-            "device_description": "Device Description and Intended Use",
-            "design_requirements": "Design Input Requirements", 
-            "design_specifications": "Design Output Specifications",
-            "design_reviews": "Design Review Records",
-            "verification_validation": "Design Verification and Validation",
-            "design_changes": "Design Change Documentation",
-            "risk_analysis": "Risk Analysis Documentation",
-            "design_controls": "Design Control Procedures",
-            "labeling": "Labeling and Instructions for Use",
-            "clinical_data": "Clinical/Performance Data"
-        }
 
-    def _initialize_ai_clients(self):
-        """Initialize AI clients from Streamlit secrets"""
-        try:
-            if 'anthropic_api_key' in st.secrets:
-                self.anthropic_client = anthropic.Anthropic(
-                    api_key=st.secrets['anthropic_api_key']
-                )
-            if 'openai_api_key' in st.secrets:
-                self.openai_client = openai.OpenAI(
-                    api_key=st.secrets['openai_api_key']
-                )
-        except Exception as e:
-            st.error(f"Error initializing AI clients: {e}")
+# ══════════════════════════════════════════════════════════════════
+# SESSION STATE INITIALIZATION
+# ══════════════════════════════════════════════════════════════════
 
-    def get_ai_response_with_iso_context(self, prompt: str, model_choice: str = "anthropic") -> str:
-        """Get AI response with ISO 13485 context"""
-        try:
-            # Enhanced system prompt with ISO 13485 expertise
-            system_prompt = """You are a world-class ISO 13485:2016 expert consultant specializing in medical device quality management systems. You have complete knowledge of the ISO 13485:2016 standard and extensive experience in:
-
-            - Medical device design controls (Section 7.3)
-            - Risk management per ISO 14971
-            - CAPA processes (Section 8.5)
-            - Post-market surveillance
-            - Regulatory compliance (FDA, EU MDR, Health Canada, etc.)
-            - Design History File (DHF) creation
-            - Device Master Record (DMR) development
-            - Quality system documentation
-
-            Provide detailed, accurate, and actionable guidance that ensures full regulatory compliance. Always reference specific ISO 13485 sections when applicable and consider practical implementation challenges."""
-
-            if model_choice == "anthropic" and self.anthropic_client:
-                # Enhance prompt with ISO context
-                # iso_context = self.iso_knowledge.get_ai_context_for_query(prompt)
-                # enhanced_prompt = f"{iso_context}\n\n{prompt}"
-                
-                response = self.anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=4000,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text
-                
-            elif model_choice == "openai" and self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=4000
-                )
-                return response.choices[0].message.content
-            else:
-                return "AI service not available. Please check API configuration."
-        except Exception as e:
-            return f"Error getting AI response: {str(e)}"
-
-def show_regulatory_menu():
-    """Display regulatory websites menu bar"""
-    regulatory_sites = {
-        "🇺🇸 FDA": "https://www.fda.gov/medical-devices",
-        "🇪🇺 EU MDR": "https://ec.europa.eu/health/md_sector/overview_en", 
-        "🇨🇦 Health Canada": "https://www.canada.ca/en/health-canada/services/drugs-health-products/medical-devices.html",
-        "🇦🇺 TGA": "https://www.tga.gov.au/products/medical-devices",
-        "🇯🇵 PMDA": "https://www.pmda.go.jp/english/review-services/outline/0002.html",
-        "🇲🇽 COFEPRIS": "https://www.gob.mx/cofepris",
-        "🇧🇷 ANVISA": "https://www.gov.br/anvisa/pt-br",
-        "🇨🇴 INVIMA": "https://www.invima.gov.co/"
+def init_session_state():
+    """Initialize all session state variables."""
+    defaults = {
+        "active_tab": "Dashboard",
+        "product_profile": {
+            "name": "",
+            "description": "",
+            "class_us": "",
+            "class_eu": "",
+            "contact_type": "",
+            "contact_duration": "",
+            "sterile": False,
+            "sterilization_method": "",
+            "has_software": False,
+            "software_safety_class": "",
+            "is_electrical": False,
+            "is_implantable": False,
+            "target_markets": [],
+            "intended_use": "",
+            "predicate_device": "",
+        },
+        "gap_statuses": {},
+        "chat_messages": [],
+        "openai_client": None,
     }
-    
-    menu_html = '<div class="regulatory-menu">'
-    menu_html += '<h4 style="margin: 0; color: #333; margin-bottom: 10px;">🌍 Global Regulatory Resources</h4>'
-    
-    for name, url in regulatory_sites.items():
-        menu_html += f'<a href="{url}" target="_blank">{name}</a>'
-    
-    menu_html += '</div>'
-    
-    st.markdown(menu_html, unsafe_allow_html=True)
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
 
-def main():
-    expert = EnhancedISO13485Expert()
-    
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🏥 ISO 13485 Expert Consultant</h1>
-        <p>Comprehensive Medical Device Quality Management System & Regulatory Compliance</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Regulatory menu
-    show_regulatory_menu()
-    
-    # Sidebar navigation
-    st.sidebar.title("🔧 Navigation")
-    
-    pages = {
-        "🏠 Dashboard": "dashboard",
-        "📋 CAPA Generator": "capa", 
-        "⚠️ Nonconformance Reports": "ncr",
-        "📐 Design Controls": "design_controls",
-        "🔬 DHF Generator": "dhf_generator",  # New DHF module
-        "🔍 Risk Management": "risk_mgmt",
-        "📊 Audit Tools": "audit",
-        "💬 AI Consultant": "ai_chat",
-        "📚 Document Library": "docs",
-        "🎯 Compliance Checker": "compliance"
-    }
-    
-    selected_page = st.sidebar.selectbox("Select Module", list(pages.keys()))
-    page_key = pages[selected_page]
-    
-    # AI Model Selection in sidebar
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🤖 AI Configuration")
-    ai_model = st.sidebar.radio("Select AI Model", ["anthropic", "openai"], key="ai_model")
-    
-    # ISO 13485 Quick Reference in sidebar
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📖 ISO 13485 Quick Reference")
-    with st.sidebar.expander("Section Overview"):
-        st.markdown("""
-        **4.** Quality Management System
-        **5.** Management Responsibility
-        **6.** Resource Management  
-        **7.** Product Realization
-        **8.** Measurement & Improvement
-        """)
-    
-    # Main content area
-    if page_key == "dashboard":
-        show_dashboard(expert)
-    elif page_key == "capa":
-        show_capa_generator(expert, ai_model)
-    elif page_key == "ncr":
-        show_ncr_generator(expert, ai_model)
-    elif page_key == "design_controls":
-        show_design_controls(expert, ai_model)
-    elif page_key == "dhf_generator":
-        show_dhf_generator(expert, ai_model)  # New DHF module
-    elif page_key == "risk_mgmt":
-        show_risk_management(expert, ai_model)
-    elif page_key == "audit":
-        show_audit_tools(expert, ai_model)
-    elif page_key == "ai_chat":
-        show_ai_consultant(expert, ai_model)
-    elif page_key == "docs":
-        show_document_library(expert)
-    elif page_key == "compliance":
-        show_compliance_checker(expert, ai_model)
 
-def show_dhf_generator(expert, ai_model):
-    """DHF (Design History File) Generator for Product Development Teams"""
-    st.header("🔬 Design History File (DHF) Generator")
-    st.markdown("**For Product Development Teams** - Transform R&D files into comprehensive DHF per FDA 21 CFR 820.30")
-    
-    # Information panel
-    with st.expander("ℹ️ About Design History Files (DHF)"):
-        st.markdown("""
-        A Design History File (DHF) contains or references the documentation necessary to demonstrate that the design development plan was followed and that the device design output meets the design input requirements.
+init_session_state()
 
-        **Required per FDA 21 CFR 820.30:**
-        - Design and development planning
-        - Design input requirements
-        - Design output specifications  
-        - Design review records
-        - Design verification and validation
-        - Design transfer documentation
-        - Design changes and their controls
-        """)
-    
-    # File upload section
-    st.subheader("📁 Upload R&D Documentation")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("""
-        <div class="dhf-upload-area">
-            <h4>🎯 Upload Your Files (3-5 files recommended)</h4>
-            <p>Supported: Word docs, PDFs, Google Docs, Images, Excel files</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # File uploaders
-        uploaded_files = st.file_uploader(
-            "Choose files for DHF generation",
-            type=['docx', 'pdf', 'xlsx', 'png', 'jpg', 'jpeg', 'txt'],
-            accept_multiple_files=True,
-            help="Upload your R&D documentation, specifications, test reports, images, etc."
-        )
-        
-        # Google Docs URL input
-        google_docs_urls = st.text_area(
-            "Google Docs URLs (one per line)",
-            placeholder="https://docs.google.com/document/d/...\nhttps://docs.google.com/document/d/...",
-            help="Paste Google Docs URLs that should be included in the DHF"
-        )
-    
-    with col2:
-        st.subheader("📋 File Preview")
-        if uploaded_files:
-            for i, file in enumerate(uploaded_files):
-                st.markdown(f"""
-                <div class="file-preview">
-                    <strong>📄 {file.name}</strong><br>
-                    <small>Type: {file.type or 'Unknown'} | Size: {file.size} bytes</small>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        if google_docs_urls:
-            urls = [url.strip() for url in google_docs_urls.split('\n') if url.strip()]
-            for url in urls:
-                st.markdown(f"""
-                <div class="file-preview">
-                    <strong>🌐 Google Doc</strong><br>
-                    <small>{url[:50]}...</small>
-                </div>
-                """, unsafe_allow_html=True)
-    
-    # DHF Configuration Form
-    if uploaded_files or google_docs_urls:
-        st.subheader("⚙️ DHF Configuration")
-        
-        with st.form("dhf_config_form"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                device_name = st.text_input("Device Name*", placeholder="e.g., CardioMonitor Pro")
-                device_class = st.selectbox("Device Class", ["Class I", "Class II", "Class III", "IVD"])
-                intended_use = st.text_area("Intended Use*", height=100, 
-                                          placeholder="Describe the medical purpose and target population...")
-                
-            with col2:
-                manufacturer = st.text_input("Manufacturer", placeholder="Company Name")
-                product_code = st.text_input("Product Code/Model", placeholder="e.g., CM-2024-001")
-                regulatory_pathway = st.selectbox("Regulatory Pathway", 
-                                                ["510(k)", "PMA", "De Novo", "QSR", "EU MDR CE Marking"])
-                
-            with col3:
-                development_team = st.text_input("Development Team Lead", placeholder="Engineer Name")
-                project_start_date = st.date_input("Project Start Date")
-                target_submission = st.date_input("Target Regulatory Submission")
-            
-            # AI Enhancement Options
-            st.subheader("🤖 AI Enhancement Options")
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                enhance_design_inputs = st.checkbox("✨ Enhance Design Inputs", value=True)
-                generate_verification_plan = st.checkbox("✨ Generate Verification Plan", value=True)
-                
-            with col2:
-                create_risk_analysis = st.checkbox("✨ Create Risk Analysis", value=True)
-                enhance_design_outputs = st.checkbox("✨ Enhance Design Outputs", value=True)
-                
-            with col3:
-                generate_validation_protocol = st.checkbox("✨ Generate Validation Protocol", value=True)
-                create_clinical_evaluation = st.checkbox("✨ Create Clinical Evaluation", value=False)
-            
-            # Missing Information Questions
-            st.subheader("❓ Fill in Missing Information")
-            st.markdown("*The AI will ask targeted questions about information not found in your uploaded files*")
-            
-            auto_questions = st.checkbox("🤖 Auto-generate questions for missing DHF elements", value=True)
-            
-            submitted = st.form_submit_button("🚀 Generate DHF", type="primary")
-            
-            if submitted:
-                if not device_name or not intended_use:
-                    st.error("Please provide at least Device Name and Intended Use")
-                else:
-                    generate_dhf_with_ai(expert, ai_model, {
-                        'uploaded_files': uploaded_files,
-                        'google_docs_urls': google_docs_urls,
-                        'device_name': device_name,
-                        'device_class': device_class,
-                        'intended_use': intended_use,
-                        'manufacturer': manufacturer,
-                        'product_code': product_code,
-                        'regulatory_pathway': regulatory_pathway,
-                        'development_team': development_team,
-                        'project_start_date': project_start_date,
-                        'target_submission': target_submission,
-                        'enhancements': {
-                            'enhance_design_inputs': enhance_design_inputs,
-                            'generate_verification_plan': generate_verification_plan,
-                            'create_risk_analysis': create_risk_analysis,
-                            'enhance_design_outputs': enhance_design_outputs,
-                            'generate_validation_protocol': generate_validation_protocol,
-                            'create_clinical_evaluation': create_clinical_evaluation
-                        },
-                        'auto_questions': auto_questions
-                    })
 
-def generate_dhf_with_ai(expert, ai_model, config):
-    """Generate comprehensive DHF using AI"""
-    
-    st.markdown("""
-    <div class="ai-enhancement-panel">
-        <h3>🤖 AI DHF Generation in Progress</h3>
-        <p>Analyzing your files and generating comprehensive Design History File...</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Step 1: Analyze uploaded files
-    with st.spinner("📊 Step 1/5: Analyzing uploaded documentation..."):
-        file_analysis = analyze_uploaded_files(config['uploaded_files'], expert, ai_model)
-        st.success("✅ File analysis complete")
-    
-    # Step 2: Extract existing information
-    with st.spinner("🔍 Step 2/5: Extracting design information..."):
-        extracted_info = extract_design_information(file_analysis, expert, ai_model)
-        st.success("✅ Information extraction complete")
-    
-    # Step 3: Identify gaps and generate questions
-    if config['auto_questions']:
-        with st.spinner("❓ Step 3/5: Identifying information gaps..."):
-            gaps_and_questions = identify_dhf_gaps(extracted_info, config, expert, ai_model)
-            st.success("✅ Gap analysis complete")
-            
-            # Show questions to user
-            if gaps_and_questions['questions']:
-                st.subheader("🗣️ Additional Information Needed")
-                st.markdown("Please answer these questions to complete your DHF:")
-                
-                additional_responses = {}
-                for i, question in enumerate(gaps_and_questions['questions']):
-                    response = st.text_area(f"Q{i+1}: {question}", key=f"gap_q_{i}", height=100)
-                    additional_responses[f"question_{i+1}"] = response
-                
-                if st.button("Continue with DHF Generation"):
-                    config['additional_responses'] = additional_responses
-                else:
-                    return
-    
-    # Step 4: Generate DHF sections
-    with st.spinner("📝 Step 4/5: Generating DHF sections..."):
-        dhf_sections = generate_dhf_sections(extracted_info, config, expert, ai_model)
-        st.success("✅ DHF sections generated")
-    
-    # Step 5: Compile final DHF
-    with st.spinner("📋 Step 5/5: Compiling final DHF document..."):
-        final_dhf = compile_dhf_document(dhf_sections, config, expert, ai_model)
-        st.success("✅ DHF generation complete!")
-    
-    # Display results
-    display_dhf_results(final_dhf, config)
+# ══════════════════════════════════════════════════════════════════
+# OPENAI CLIENT
+# ══════════════════════════════════════════════════════════════════
 
-def analyze_uploaded_files(uploaded_files, expert, ai_model):
-    """Analyze content of uploaded files"""
-    analysis_results = {}
-    
-    if not uploaded_files:
-        return analysis_results
-    
-    for file in uploaded_files:
+def get_openai_client():
+    """Get or initialize the OpenAI client."""
+    if st.session_state["openai_client"] is None:
         try:
-            file_content = extract_file_content(file)
-            
-            # AI analysis of content
-            prompt = f"""
-            Analyze this medical device development file for DHF-relevant information:
-            
-            Filename: {file.name}
-            Content: {file_content[:3000]}  # First 3000 chars
-            
-            Extract and categorize information relevant to:
-            1. Device description and intended use
-            2. Design input requirements
-            3. Design outputs/specifications
-            4. Verification and validation data
-            5. Risk analysis information
-            6. Design review information
-            7. Regulatory requirements
-            
-            Provide a structured analysis of what information is present.
-            """
-            
-            analysis = expert.get_ai_response_with_iso_context(prompt, ai_model)
-            analysis_results[file.name] = {
-                'content': file_content,
-                'analysis': analysis,
-                'file_type': file.type
-            }
-            
-        except Exception as e:
-            analysis_results[file.name] = {'error': str(e)}
-    
-    return analysis_results
+            api_key = st.secrets.get("openai_api_key", "")
+            if api_key:
+                st.session_state["openai_client"] = openai.OpenAI(api_key=api_key)
+        except Exception:
+            pass
+    return st.session_state["openai_client"]
 
-def extract_file_content(file):
-    """Extract text content from various file types"""
-    content = ""
-    
+
+def get_ai_response(messages: List[Dict[str, str]], max_tokens: int = 4000, temperature: float = 0.4) -> str:
+    """Get a response from OpenAI using the latest model."""
+    client = get_openai_client()
+    if not client:
+        return "OpenAI API not configured. Add your openai_api_key to .streamlit/secrets.toml."
     try:
-        if file.type == "application/pdf":
-            # PDF extraction
-            pdf_reader = PyPDF2.PdfReader(file)
-            for page in pdf_reader.pages:
-                content += page.extract_text() + "\n"
-                
-        elif file.type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"]:
-            # Word document extraction
-            doc = docx.Document(file)
-            for paragraph in doc.paragraphs:
-                content += paragraph.text + "\n"
-                
-        elif file.type in ["text/plain", "application/vnd.ms-excel"]:
-            # Text or basic file
-            content = str(file.read(), 'utf-8', errors='ignore')
-            
-        elif file.type.startswith('image/'):
-            # Image - just return metadata
-            content = f"Image file: {file.name}, Size: {file.size} bytes"
-            
-        else:
-            content = f"Unsupported file type: {file.type}"
-            
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        content = f"Error reading file: {str(e)}"
-    
-    return content
+        return f"AI request failed: {e}"
 
-def extract_design_information(file_analysis, expert, ai_model):
-    """Extract structured design information from file analysis"""
-    
-    combined_content = ""
-    for filename, analysis in file_analysis.items():
-        if 'analysis' in analysis:
-            combined_content += f"\n--- {filename} ---\n{analysis['analysis']}\n"
-    
-    prompt = f"""
-    Based on the file analysis below, extract and structure information for a Design History File (DHF):
-    
-    {combined_content}
-    
-    Create a structured summary with these categories:
-    1. DEVICE_DESCRIPTION: What the device is and its intended use
-    2. DESIGN_INPUTS: User needs, regulatory requirements, performance requirements
-    3. DESIGN_OUTPUTS: Specifications, drawings, software, labeling
-    4. VERIFICATION_DATA: Test results, analysis data confirming design outputs meet inputs  
-    5. VALIDATION_DATA: Clinical data, usability data confirming device meets user needs
-    6. RISK_INFORMATION: Hazards identified, risk analysis, risk controls
-    7. DESIGN_REVIEWS: Review meetings, decisions, approvals
-    8. REGULATORY_INFO: Standards referenced, regulatory requirements
-    
-    For each category, note:
-    - Information FOUND in the files
-    - Information MISSING or INCOMPLETE
-    - Quality/completeness score (1-10)
-    
-    Format as structured data that can be used for DHF generation.
-    """
-    
-    extraction = expert.get_ai_response_with_iso_context(prompt, ai_model)
-    
-    return {
-        'raw_extraction': extraction,
-        'file_analysis': file_analysis,
-        'extraction_timestamp': datetime.now().isoformat()
-    }
 
-def identify_dhf_gaps(extracted_info, config, expert, ai_model):
-    """Identify gaps in DHF and generate targeted questions"""
-    
-    prompt = f"""
-    Review this extracted design information for DHF completeness:
-    
-    Device: {config['device_name']}
-    Class: {config['device_class']}
-    Intended Use: {config['intended_use']}
-    Regulatory Path: {config['regulatory_pathway']}
-    
-    Extracted Information:
-    {extracted_info['raw_extraction']}
-    
-    Based on FDA 21 CFR 820.30 requirements, identify the TOP 5 most critical information gaps and generate specific questions to fill them.
-    
-    Focus on:
-    1. Missing design inputs that are critical for this device class
-    2. Incomplete design outputs/specifications  
-    3. Missing verification/validation requirements
-    4. Inadequate risk analysis information
-    5. Regulatory compliance gaps
-    
-    Generate 3-5 specific, actionable questions that would provide the most valuable missing information for the DHF.
-    
-    Format as:
-    CRITICAL_GAPS: [list of gaps]
-    QUESTIONS: [numbered list of specific questions]
-    PRIORITY: [High/Medium/Low for each question]
-    """
-    
-    gap_analysis = expert.get_ai_response_with_iso_context(prompt, ai_model)
-    
-    # Parse questions from AI response
-    questions = []
-    if "QUESTIONS:" in gap_analysis:
-        questions_section = gap_analysis.split("QUESTIONS:")[1]
-        # Extract numbered questions
-        import re
-        question_matches = re.findall(r'\d+\.\s*(.+?)(?=\d+\.|$)', questions_section, re.DOTALL)
-        questions = [q.strip() for q in question_matches if q.strip()]
-    
-    return {
-        'gap_analysis': gap_analysis,
-        'questions': questions[:5],  # Limit to 5 questions
-        'analysis_timestamp': datetime.now().isoformat()
-    }
+# ══════════════════════════════════════════════════════════════════
+# HELPER: shorthand for profile
+# ══════════════════════════════════════════════════════════════════
 
-def generate_dhf_sections(extracted_info, config, expert, ai_model):
-    """Generate comprehensive DHF sections"""
-    
-    sections = {}
-    
-    # Base information for all sections
-    device_info = f"""
-    Device: {config['device_name']}
-    Class: {config['device_class']} 
-    Intended Use: {config['intended_use']}
-    Manufacturer: {config.get('manufacturer', 'TBD')}
-    Product Code: {config.get('product_code', 'TBD')}
-    Regulatory Path: {config['regulatory_pathway']}
-    """
-    
-    # Get additional responses if provided
-    additional_info = ""
-    if config.get('additional_responses'):
-        additional_info = "\nAdditional Information Provided:\n"
-        for key, value in config['additional_responses'].items():
-            additional_info += f"{key}: {value}\n"
-    
-    # Section 1: Device Description
-    prompt = f"""
-    Create a comprehensive Device Description section for the DHF:
-    
-    {device_info}
-    {additional_info}
-    
-    Extracted Information:
-    {extracted_info['raw_extraction']}
-    
-    Generate a detailed device description including:
-    1. Device overview and classification
-    2. Intended use and indications for use
-    3. Target patient population
-    4. Key features and functionality
-    5. Regulatory classification rationale
-    6. Comparison to predicate devices (if 510k)
-    
-    Format as a professional DHF section with proper headers.
-    """
-    
-    sections['device_description'] = expert.get_ai_response_with_iso_context(prompt, ai_model)
-    
-    # Section 2: Design Input Requirements  
-    if config['enhancements']['enhance_design_inputs']:
-        prompt = f"""
-        Create a comprehensive Design Input Requirements section:
-        
-        {device_info}
-        {additional_info}
-        
-        Based on extracted information:
-        {extracted_info['raw_extraction']}
-        
-        Generate design inputs covering:
-        1. Performance requirements
-        2. Safety requirements  
-        3. Regulatory requirements (FDA, ISO standards)
-        4. User interface requirements
-        5. Environmental requirements
-        6. Reliability requirements
-        7. Biocompatibility requirements (if applicable)
-        
-        Each input should be:
-        - Specific and measurable
-        - Traceable to user needs
-        - Verifiable through testing
-        
-        Format as professional DHF documentation.
-        """
-        
-        sections['design_inputs'] = expert.get_ai_response_with_iso_context(prompt, ai_model)
-    
-    # Continue generating other sections based on enhancement options...
-    
-    # Section 3: Design Outputs
-    if config['enhancements']['enhance_design_outputs']:
-        sections['design_outputs'] = generate_design_outputs_section(device_info, extracted_info, expert, ai_model)
-    
-    # Section 4: Verification Plan
-    if config['enhancements']['generate_verification_plan']:
-        sections['verification_plan'] = generate_verification_plan_section(device_info, extracted_info, expert, ai_model)
-    
-    # Section 5: Risk Analysis
-    if config['enhancements']['create_risk_analysis']:
-        sections['risk_analysis'] = generate_risk_analysis_section(device_info, extracted_info, expert, ai_model)
-    
-    return sections
+def profile():
+    return st.session_state["product_profile"]
 
-def generate_design_outputs_section(device_info, extracted_info, expert, ai_model):
-    """Generate design outputs section"""
-    prompt = f"""
-    Create a comprehensive Design Outputs section for the DHF:
-    
-    {device_info}
-    
-    Based on extracted information:
-    {extracted_info['raw_extraction']}
-    
-    Generate design outputs including:
-    1. Technical specifications document
-    2. Engineering drawings/CAD files
-    3. Software specifications (if applicable)
-    4. Bill of materials  
-    5. Manufacturing procedures
-    6. Labeling and instructions for use
-    7. Packaging specifications
-    8. Test methods and acceptance criteria
-    
-    Each output should:
-    - Meet corresponding design input
-    - Include acceptance criteria
-    - Be reviewed and approved
-    - Enable verification testing
-    
-    Format as professional DHF documentation with clear traceability.
-    """
-    
-    return expert.get_ai_response_with_iso_context(prompt, ai_model)
 
-def generate_verification_plan_section(device_info, extracted_info, expert, ai_model):
-    """Generate verification plan section"""
-    prompt = f"""
-    Create a comprehensive Design Verification Plan:
-    
-    {device_info}
-    
-    Based on design information:
-    {extracted_info['raw_extraction']}
-    
-    Generate verification plan covering:
-    1. Verification objectives and scope
-    2. Test methods for each design input
-    3. Acceptance criteria
-    4. Test equipment requirements
-    5. Sample size rationale
-    6. Statistical methods (if applicable)
-    7. Pass/fail criteria
-    8. Verification schedule
-    
-    Include specific test protocols for:
-    - Performance testing
-    - Safety testing
-    - Environmental testing  
-    - Software verification (if applicable)
-    - Biocompatibility testing (if applicable)
-    
-    Format as a detailed verification protocol per ISO 13485 requirements.
-    """
-    
-    return expert.get_ai_response_with_iso_context(prompt, ai_model)
+def gap_statuses():
+    return st.session_state["gap_statuses"]
 
-def generate_risk_analysis_section(device_info, extracted_info, expert, ai_model):
-    """Generate risk analysis section per ISO 14971"""
-    prompt = f"""
-    Create a comprehensive Risk Management File per ISO 14971:
-    
-    {device_info}
-    
-    Based on design information:
-    {extracted_info['raw_extraction']}
-    
-    Generate risk analysis including:
-    1. Hazard identification
-    2. Hazardous situation analysis
-    3. Risk estimation (severity × probability)
-    4. Risk evaluation against acceptance criteria
-    5. Risk control measures
-    6. Residual risk analysis
-    7. Risk/benefit analysis
-    8. Post-market risk monitoring plan
-    
-    Consider hazards related to:
-    - Mechanical hazards
-    - Electrical hazards
-    - Biological/biocompatibility hazards
-    - Usability hazards
-    - Software hazards (if applicable)
-    - Environmental hazards
-    
-    Format as ISO 14971 compliant risk management documentation.
-    """
-    
-    return expert.get_ai_response_with_iso_context(prompt, ai_model)
 
-def compile_dhf_document(dhf_sections, config, expert, ai_model):
-    """Compile all sections into final DHF document"""
-    
-    # Create document header
-    header = f"""
-# DESIGN HISTORY FILE (DHF)
+# ══════════════════════════════════════════════════════════════════
+# TOP BAR
+# ══════════════════════════════════════════════════════════════════
 
-**Device:** {config['device_name']}
-**Product Code:** {config.get('product_code', 'TBD')}
-**Device Class:** {config['device_class']}
-**Manufacturer:** {config.get('manufacturer', 'TBD')}
+st.markdown("""
+<div class="top-bar">
+    <div class="logo">R</div>
+    <span class="title">RegIntel</span>
+    <span class="subtitle">Medical Device Regulatory Intelligence</span>
+</div>
+""", unsafe_allow_html=True)
 
-**Document Control Information:**
-- DHF Number: DHF-{config['device_name'].replace(' ', '-')}-{datetime.now().strftime('%Y%m%d')}
-- Creation Date: {datetime.now().strftime('%Y-%m-%d')}
-- Generated by: ISO 13485 Expert Consultant
-- Regulatory Pathway: {config['regulatory_pathway']}
 
----
+# ══════════════════════════════════════════════════════════════════
+# SIDEBAR NAVIGATION
+# ══════════════════════════════════════════════════════════════════
 
-## TABLE OF CONTENTS
+TABS = [
+    ("Dashboard", "Dashboard"),
+    ("Product Profile", "Product Profile"),
+    ("Requirements Matrix", "Requirements Matrix"),
+    ("Gap Analysis", "Gap Analysis"),
+    ("Standards Library", "Standards Library"),
+    ("AI Advisor", "AI Advisor"),
+]
 
-1. Device Description and Intended Use
-2. Design Input Requirements
-3. Design Output Specifications
-4. Design Verification Plan
-5. Design Validation Protocol
-6. Risk Analysis (ISO 14971)
-7. Design Review Records
-8. Design Transfer Documentation
-9. Design Change Control
-10. Clinical Evaluation
+with st.sidebar:
+    st.markdown("### Navigation")
+    for label, tab_id in TABS:
+        if st.button(label, key=f"nav_{tab_id}", use_container_width=True,
+                     type="primary" if st.session_state["active_tab"] == tab_id else "secondary"):
+            st.session_state["active_tab"] = tab_id
+            st.rerun()
 
----
-"""
-    
-    # Combine all sections
-    full_document = header
-    
-    section_titles = {
-        'device_description': '## 1. DEVICE DESCRIPTION AND INTENDED USE',
-        'design_inputs': '## 2. DESIGN INPUT REQUIREMENTS',
-        'design_outputs': '## 3. DESIGN OUTPUT SPECIFICATIONS', 
-        'verification_plan': '## 4. DESIGN VERIFICATION PLAN',
-        'validation_protocol': '## 5. DESIGN VALIDATION PROTOCOL',
-        'risk_analysis': '## 6. RISK ANALYSIS (ISO 14971)'
-    }
-    
-    for section_key, content in dhf_sections.items():
-        title = section_titles.get(section_key, f"## {section_key.upper()}")
-        full_document += f"\n{title}\n\n{content}\n\n---\n"
-    
-    # Add compliance footer
-    full_document += f"""
+    st.divider()
+    st.caption("ISO 13485 | FDA 21 CFR 820")
+    st.caption("EU MDR | UK MDR | ANVISA")
+    st.caption("COFEPRIS | INVIMA | ANMAT")
 
-## REGULATORY COMPLIANCE STATEMENT
 
-This Design History File has been compiled in accordance with:
-- FDA 21 CFR 820.30 (Design Controls)
-- ISO 13485:2016 Section 7.3 (Design and Development)
-- ISO 14971:2019 (Risk Management)
+# ══════════════════════════════════════════════════════════════════
+# TAB: DASHBOARD
+# ══════════════════════════════════════════════════════════════════
 
-**Document Status:** Draft - Requires Review and Approval
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+def render_dashboard():
+    p = profile()
+    gs = get_gap_stats(gap_statuses())
+    profile_complete = bool(p["name"] and p["target_markets"])
+    markets_selected = len(p["target_markets"])
+    applicable = get_applicable_standards(p["target_markets"])
 
----
+    # Hero
+    st.markdown("""
+    <div class="hero">
+        <h2>Regulatory Intelligence Center</h2>
+        <p>Your unified compliance hub for ISO 13485 and multi-market medical device regulatory requirements across the US, EU, UK, and Latin America.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-*This document was generated by AI assistance and requires human review and approval before use in regulatory submissions.*
-"""
-    
-    return {
-        'full_document': full_document,
-        'sections': dhf_sections,
-        'metadata': {
-            'device_name': config['device_name'],
-            'generation_date': datetime.now().isoformat(),
-            'ai_model': 'AI-Generated',
-            'total_sections': len(dhf_sections)
-        }
-    }
+    # Quick Stats
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Product Profile", "Configured" if profile_complete else "Not Set",
+                   help=p["name"] if profile_complete else "Configure in Product Profile tab")
+    with c2:
+        flags = " ".join(MARKETS[m]["flag"] for m in p["target_markets"]) if p["target_markets"] else "None"
+        st.metric("Target Markets", markets_selected, help=flags)
+    with c3:
+        st.metric("Applicable Standards", len(applicable))
+    with c4:
+        st.metric("Gap Analysis", f"{gs['compliant']}/{gs['total']}",
+                   help=f"{gs['non_compliant']} gaps | {gs['partial']} partial | {gs['not_assessed']} unassessed")
 
-def display_dhf_results(final_dhf, config):
-    """Display the generated DHF results"""
-    
-    st.success("🎉 DHF Generation Complete!")
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📄 Total Sections", final_dhf['metadata']['total_sections'])
-    with col2:
-        st.metric("📝 Document Length", f"{len(final_dhf['full_document'])} chars")
-    with col3:
-        st.metric("🤖 AI Model", config.get('ai_model', 'AI'))
-    with col4:
-        st.metric("⏱️ Generated", "Just now")
-    
-    # Document tabs
-    tabs = st.tabs(["📋 Complete DHF", "🔍 Section Preview", "📥 Download Options"])
-    
-    with tabs[0]:
-        st.subheader("Complete Design History File")
-        st.markdown(final_dhf['full_document'])
-    
-    with tabs[1]:
-        st.subheader("DHF Sections Preview")
-        for section_name, content in final_dhf['sections'].items():
-            with st.expander(f"📑 {section_name.replace('_', ' ').title()}"):
-                st.markdown(content[:1000] + "..." if len(content) > 1000 else content)
-    
-    with tabs[2]:
-        st.subheader("Download Options")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Download as Markdown
-            st.download_button(
-                label="📥 Download as Markdown",
-                data=final_dhf['full_document'],
-                file_name=f"DHF_{config['device_name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.md",
-                mime="text/markdown"
-            )
-            
-        with col2:
-            # Convert to Word and download (basic implementation)
-            if st.button("📥 Generate Word Document"):
-                word_doc = create_word_document(final_dhf)
-                st.success("Word document ready for download!")
+    st.markdown("---")
 
-def create_word_document(final_dhf):
-    """Create Word document from DHF content"""
-    # This would require implementing Word document creation
-    # For now, just show the option
-    st.info("Word document generation would be implemented here")
-    return None
+    # Quick Actions
+    st.subheader("Quick Actions")
+    qa1, qa2, qa3, qa4 = st.columns(4)
+    with qa1:
+        st.markdown("**Configure Product Profile**")
+        st.caption("Define your device characteristics, classification, and target markets.")
+        if st.button("Set Up Profile", key="qa_profile"):
+            st.session_state["active_tab"] = "Product Profile"
+            st.rerun()
+    with qa2:
+        st.markdown("**View Requirements Matrix**")
+        st.caption("Testing, documentation, and submission requirements by market.")
+        if st.button("View Matrix", key="qa_matrix"):
+            st.session_state["active_tab"] = "Requirements Matrix"
+            st.rerun()
+    with qa3:
+        st.markdown("**Run Gap Analysis**")
+        st.caption("Assess your QMS against ISO 13485 clause-by-clause.")
+        if st.button("Start Analysis", key="qa_gap"):
+            st.session_state["active_tab"] = "Gap Analysis"
+            st.rerun()
+    with qa4:
+        st.markdown("**Ask the AI Advisor**")
+        st.caption("Get instant answers on regulatory questions and pathways.")
+        if st.button("Open Chat", key="qa_chat"):
+            st.session_state["active_tab"] = "AI Advisor"
+            st.rerun()
 
-# Keep all the other existing functions from the original app
-def show_dashboard(expert):
-    st.header("📊 Quality Management Dashboard")
-    
-    # Key metrics row
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Open CAPAs", "12", "-3")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Nonconformances", "8", "+2")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Compliance Score", "94%", "+1%")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("DHF Projects", "5", "+2")
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("---")
 
-def show_capa_generator(expert, ai_model):
-    st.header("📋 CAPA Generator")
-    st.markdown("Generate ISO 13485 compliant Corrective and Preventive Action reports")
-    
-    # Existing CAPA generator code from the original app...
-    st.info("🚧 Enhanced CAPA Generator - Implementation continues from original app")
+    # Market Overview
+    st.subheader("Market Overview")
+    cols = st.columns(len(MARKETS))
+    for i, (code, market) in enumerate(MARKETS.items()):
+        with cols[i]:
+            active = code in p["target_markets"]
+            st.markdown(f"**{market['flag']} {market['name']}**")
+            st.caption(market["agency"])
+            if active:
+                st.success("Active Market", icon=None)
 
-def show_ncr_generator(expert, ai_model):
-    st.header("⚠️ Nonconformance Report Generator")
-    st.info("🚧 Enhanced NCR Generator - Implementation continues")
 
-def show_design_controls(expert, ai_model):
-    st.header("📐 Design Controls Assistant")
-    st.info("🚧 Enhanced Design Controls - Implementation continues")
+# ══════════════════════════════════════════════════════════════════
+# TAB: PRODUCT PROFILE
+# ══════════════════════════════════════════════════════════════════
 
-def show_risk_management(expert, ai_model):
-    st.header("🔍 Risk Management (ISO 14971)")
-    st.info("🚧 Enhanced Risk Management - Implementation continues")
+def render_product_profile():
+    st.header("Product Profile")
+    p = profile()
 
-def show_audit_tools(expert, ai_model):
-    st.header("📊 Internal Audit Tools")
-    st.info("🚧 Enhanced Audit Tools - Implementation continues")
+    # Device Information
+    with st.container(border=True):
+        st.subheader("Device Information")
+        c1, c2 = st.columns(2)
+        with c1:
+            p["name"] = st.text_input("Device Name", value=p["name"], placeholder="e.g., WoundSeal Pro Bandage System")
+        with c2:
+            p["predicate_device"] = st.text_input("Predicate Device (510(k))", value=p["predicate_device"], placeholder="e.g., K123456")
+        p["description"] = st.text_area("Device Description", value=p["description"], placeholder="Brief description of the device, its components, and function...", height=80)
+        p["intended_use"] = st.text_area("Intended Use / Indications for Use", value=p["intended_use"], placeholder="The device is intended for...", height=80)
 
-def show_ai_consultant(expert, ai_model):
-    st.header("💬 AI ISO 13485 Consultant")
-    st.markdown(f"Chat with your ISO 13485 expert using **{ai_model.title()}**")
-    
-    # Initialize chat history
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Chat interface
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-    
-    # User input
-    if prompt := st.chat_input("Ask your ISO 13485 question..."):
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
-        
-        # Get AI response with enhanced ISO context
-        with st.chat_message("assistant"):
-            with st.spinner("Consulting ISO 13485 expertise..."):
-                response = expert.get_ai_response_with_iso_context(prompt, ai_model)
-                st.write(response)
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
+    # Classification
+    with st.container(border=True):
+        st.subheader("Classification")
+        c1, c2 = st.columns(2)
+        with c1:
+            us_options = ["", "Class I", "Class I (510(k) required)", "Class II", "Class II (De Novo)"]
+            us_labels = ["Select...", "Class I - Low Risk", "Class I - 510(k) Required", "Class II - Moderate Risk (510(k))", "Class II - De Novo"]
+            idx = us_options.index(p["class_us"]) if p["class_us"] in us_options else 0
+            p["class_us"] = st.selectbox("US FDA Classification", us_options, index=idx, format_func=lambda x: us_labels[us_options.index(x)])
+        with c2:
+            eu_options = ["", "Class I", "Class I (sterile)", "Class I (measuring)", "Class I (reusable surgical)", "Class IIa", "Class IIb"]
+            eu_labels = ["Select...", "Class I", "Class I - Sterile", "Class I - Measuring Function", "Class I - Reusable Surgical", "Class IIa", "Class IIb"]
+            idx = eu_options.index(p["class_eu"]) if p["class_eu"] in eu_options else 0
+            p["class_eu"] = st.selectbox("EU MDR Classification", eu_options, index=idx, format_func=lambda x: eu_labels[eu_options.index(x)])
 
-def show_document_library(expert):
-    st.header("📚 Document Library")
-    st.info("🚧 Enhanced Document Library - Implementation continues")
+    # Device Characteristics
+    with st.container(border=True):
+        st.subheader("Device Characteristics")
+        c1, c2 = st.columns(2)
+        with c1:
+            contact_options = ["", "none", "intact-skin", "mucosal-membrane", "breached-skin", "blood-path-indirect", "blood-contact", "tissue-bone", "implant"]
+            contact_labels = ["Select...", "No patient contact", "Intact skin surface", "Mucosal membrane", "Breached/compromised skin", "Blood path - indirect", "Blood contacting", "Tissue/bone contact", "Implant"]
+            idx = contact_options.index(p["contact_type"]) if p["contact_type"] in contact_options else 0
+            p["contact_type"] = st.selectbox("Patient Contact Type", contact_options, index=idx, format_func=lambda x: contact_labels[contact_options.index(x)])
+        with c2:
+            dur_options = ["", "limited", "prolonged", "permanent"]
+            dur_labels = ["Select...", "Limited (< 24 hours)", "Prolonged (24 hrs - 30 days)", "Permanent (> 30 days)"]
+            idx = dur_options.index(p["contact_duration"]) if p["contact_duration"] in dur_options else 0
+            p["contact_duration"] = st.selectbox("Contact Duration", dur_options, index=idx, format_func=lambda x: dur_labels[dur_options.index(x)])
 
-def show_compliance_checker(expert, ai_model):
-    st.header("🎯 ISO 13485 Compliance Checker")
-    st.info("🚧 Enhanced Compliance Checker - Implementation continues")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            p["sterile"] = st.toggle("Sterile Device", value=p["sterile"])
+        with c2:
+            p["has_software"] = st.toggle("Contains Software", value=p["has_software"])
+        with c3:
+            p["is_electrical"] = st.toggle("Electrical / Electronic", value=p["is_electrical"])
 
-if __name__ == "__main__":
-    main()
+        if p["sterile"]:
+            ster_options = ["", "EO", "gamma", "e-beam", "steam", "dry-heat", "other"]
+            ster_labels = ["Select...", "Ethylene Oxide (EO)", "Gamma Radiation", "Electron Beam", "Steam (Autoclave)", "Dry Heat", "Other"]
+            idx = ster_options.index(p["sterilization_method"]) if p["sterilization_method"] in ster_options else 0
+            p["sterilization_method"] = st.selectbox("Sterilization Method", ster_options, index=idx, format_func=lambda x: ster_labels[ster_options.index(x)])
+
+        if p["has_software"]:
+            sw_options = ["", "A", "B", "C"]
+            sw_labels = ["Select...", "Class A - No injury or damage to health", "Class B - Non-serious injury", "Class C - Death or serious injury possible"]
+            idx = sw_options.index(p["software_safety_class"]) if p["software_safety_class"] in sw_options else 0
+            p["software_safety_class"] = st.selectbox("Software Safety Classification (IEC 62304)", sw_options, index=idx, format_func=lambda x: sw_labels[sw_options.index(x)])
+
+    # Target Markets
+    with st.container(border=True):
+        st.subheader("Target Markets")
+        st.caption("Select all markets where you intend to sell this device:")
+        cols = st.columns(len(MARKETS))
+        for i, (code, market) in enumerate(MARKETS.items()):
+            with cols[i]:
+                active = code in p["target_markets"]
+                if st.checkbox(f"{market['flag']} {market['name']}", value=active, key=f"market_{code}"):
+                    if code not in p["target_markets"]:
+                        p["target_markets"].append(code)
+                else:
+                    if code in p["target_markets"]:
+                        p["target_markets"].remove(code)
+
+    st.session_state["product_profile"] = p
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB: REQUIREMENTS MATRIX
+# ══════════════════════════════════════════════════════════════════
+
+def render_requirements_matrix():
+    st.header("Requirements Matrix")
+    p = profile()
+
+    if not p["name"]:
+        st.warning("Configure your Product Profile first for tailored requirements. Showing general requirements for all markets.")
+
+    markets = p["target_markets"] if p["target_markets"] else list(MARKETS.keys())
+
+    # Submission Pathways by Market
+    with st.container(border=True):
+        st.subheader("Submission Pathways by Market")
+        rows = []
+        for mkt in markets:
+            info = get_classification_info(mkt, p)
+            if not info:
+                continue
+            # Determine class key for display
+            if mkt == "EU":
+                class_key = p.get("class_eu") or "Class IIa"
+            else:
+                raw = p.get("class_us", "")
+                if "Class II" in raw:
+                    class_key = "Class II"
+                elif "Class I" in raw:
+                    class_key = "Class I"
+                else:
+                    class_key = "Class II"
+            rows.append({
+                "Market": f"{MARKETS[mkt]['flag']} {MARKETS[mkt]['agency']}",
+                "Class": class_key,
+                "Pathway": info["pathway"],
+                "QMS Requirement": info["qsr"],
+                "Timeline": info["timeline"],
+                "Establishment": info["establishment"],
+            })
+        if rows:
+            df = pd.DataFrame(rows)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Testing Requirements
+    with st.container(border=True):
+        st.subheader("Testing Requirements")
+        tests = get_applicable_tests(p)
+        if tests:
+            test_rows = []
+            for t in tests:
+                test_rows.append({
+                    "Test": t["name"],
+                    "Applicability": t["required"],
+                    "Est. Duration": t["duration"],
+                    "Status": "Pending",
+                })
+            df_tests = pd.DataFrame(test_rows)
+            st.dataframe(df_tests, use_container_width=True, hide_index=True)
+
+    # Applicable Standards
+    with st.container(border=True):
+        st.subheader("Applicable Standards")
+        standards = get_applicable_standards(p["target_markets"])
+        for key, std in standards:
+            with st.expander(f"**{key}** - {std['title']}"):
+                st.markdown(f"**Category:** :blue[{std['category']}]")
+                st.write(std["summary"])
+                market_flags = " ".join(MARKETS[m]["flag"] for m in std["applicableMarkets"] if m in MARKETS)
+                st.caption(f"Markets: {market_flags}")
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB: GAP ANALYSIS
+# ══════════════════════════════════════════════════════════════════
+
+def render_gap_analysis():
+    st.header("Gap Analysis")
+    gs = get_gap_stats(gap_statuses())
+
+    # Stats bar
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Items", gs["total"])
+    c2.metric("Compliant", gs["compliant"])
+    c3.metric("Partial", gs["partial"])
+    c4.metric("Non-Compliant", gs["non_compliant"])
+    c5.metric("Not Assessed", gs["not_assessed"])
+
+    # Progress bar
+    st.progress(gs["score"] / 100 if gs["score"] > 0 else 0, text=f"{gs['score']}% overall compliance score")
+
+    # Checklist by Category
+    categories = list(dict.fromkeys(item["category"] for item in GAP_ANALYSIS_ITEMS))
+
+    for cat in categories:
+        items = [item for item in GAP_ANALYSIS_ITEMS if item["category"] == cat]
+        cat_compliant = sum(1 for i in items if gap_statuses().get(i["id"]) == "compliant")
+        cat_total = len(items)
+
+        with st.expander(f"**{cat}** ({cat_compliant}/{cat_total} compliant)", expanded=False):
+            for item in items:
+                col_label, col_btns = st.columns([3, 1])
+                with col_label:
+                    critical_mark = " :red[CRITICAL]" if item.get("critical") else ""
+                    st.markdown(f"**{item['item']}**{critical_mark}")
+                    st.caption(f"Clause {item['clause']}")
+                with col_btns:
+                    current = gap_statuses().get(item["id"])
+                    options = ["Not assessed", "Compliant", "Partial", "Non-compliant"]
+                    status_map = {
+                        "Not assessed": None,
+                        "Compliant": "compliant",
+                        "Partial": "partial",
+                        "Non-compliant": "non-compliant",
+                    }
+                    reverse_map = {v: k for k, v in status_map.items()}
+                    current_label = reverse_map.get(current, "Not assessed")
+                    new_label = st.selectbox(
+                        "Status",
+                        options,
+                        index=options.index(current_label),
+                        key=f"gap_{item['id']}",
+                        label_visibility="collapsed",
+                    )
+                    new_status = status_map[new_label]
+                    if new_status is not None:
+                        st.session_state["gap_statuses"][item["id"]] = new_status
+                    elif item["id"] in st.session_state["gap_statuses"]:
+                        del st.session_state["gap_statuses"][item["id"]]
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB: STANDARDS LIBRARY
+# ══════════════════════════════════════════════════════════════════
+
+def render_standards_library():
+    st.header("Standards Library")
+
+    # Search across all knowledge
+    search_query = st.text_input("Search standards knowledge base", placeholder="e.g., nebulizer, CAPA, anti-asphyxia, sling, software validation...")
+    if search_query:
+        results = search_standards_knowledge(search_query)
+        if results:
+            st.success(f"Found {len(results)} result(s) for **{search_query}**")
+            for std_key, section, content in results[:20]:
+                with st.expander(f"**{std_key}** - {section}"):
+                    st.write(content[:2000])
+        else:
+            st.warning(f"No results found for '{search_query}'")
+
+    # ISO 13485 Clause-Level Reference
+    with st.container(border=True):
+        st.subheader("ISO 13485:2016 - Clause-Level Reference")
+        st.caption("Quality management systems - Requirements for regulatory purposes")
+
+        for section in ISO_13485_CLAUSES:
+            with st.expander(f"**Section {section['id']} - {section['title']}**"):
+                for sub in section["subclauses"]:
+                    critical = sub.get("critical", False)
+                    badge = " :red[**CRITICAL**]" if critical else ""
+                    st.markdown(f"`{sub['id']}` **{sub['title']}**{badge}")
+                    st.caption(sub["summary"])
+                    # Show related audit items
+                    audit_items = get_audit_checklist_for_clause(sub["id"])
+                    if audit_items:
+                        st.caption(f"Audit checklist: {len(audit_items)} item(s)")
+                    st.markdown("---")
+
+    # Integrated Standards Deep Knowledge
+    with st.container(border=True):
+        st.subheader("Integrated Standards - Full Knowledge Base")
+        st.caption(f"{len(DOCUMENT_REGISTRY)} source documents integrated with detailed requirements, test methods, and regulatory context")
+
+        for std_key, knowledge in ALL_STANDARDS_KNOWLEDGE.items():
+            doc_info = DOCUMENT_REGISTRY.get(std_key, {})
+            with st.expander(f"**{std_key}** - {knowledge['title']}"):
+                st.markdown(f"**Category:** {doc_info.get('category', 'N/A')}")
+                st.markdown(f"**Edition:** {doc_info.get('edition', 'N/A')}")
+                st.markdown(f"**Source:** `{doc_info.get('source_file', 'N/A')}`")
+                st.markdown("---")
+                st.markdown("**Scope:**")
+                st.write(knowledge.get("scope", ""))
+                if knowledge.get("classification"):
+                    st.markdown("**Classification:**")
+                    st.write(knowledge["classification"])
+                if knowledge.get("regulatory_notes"):
+                    st.markdown("**Regulatory Notes:**")
+                    st.write(knowledge["regulatory_notes"])
+
+                # Show key sections
+                sections = knowledge.get("sections", {})
+                if sections:
+                    st.markdown("**Key Sections:**")
+                    for sec_key, sec_val in sections.items():
+                        if isinstance(sec_val, str):
+                            with st.expander(f"{sec_key}"):
+                                st.write(sec_val[:3000])
+                        elif isinstance(sec_val, dict):
+                            title = sec_val.get("title", sec_key)
+                            content = sec_val.get("content", "")
+                            if content:
+                                with st.expander(f"{sec_key} - {title}"):
+                                    st.write(content[:3000])
+
+    # FDA Audit Checklist
+    with st.container(border=True):
+        st.subheader("FDA QSR/QMSR/ISO 13485 Internal Audit Checklist")
+        st.caption(FDA_AUDIT_CHECKLIST["description"])
+
+        for subsystem, data in FDA_AUDIT_CHECKLIST["subsystems"].items():
+            if isinstance(data, dict) and "items" in data:
+                items = data["items"]
+                with st.expander(f"**{subsystem}** ({len(items)} items)"):
+                    for item in items:
+                        st.markdown(f"**#{item['item']}** - {item['detail']}")
+                        refs = []
+                        if item.get("iso_ref"):
+                            refs.append(f"ISO: {item['iso_ref']}")
+                        if item.get("qsr_ref"):
+                            refs.append(f"QSR: {item['qsr_ref']}")
+                        if refs:
+                            st.caption(" | ".join(refs))
+                        if item.get("auditor_notes"):
+                            st.caption(f"Notes: {item['auditor_notes']}")
+                        st.markdown("---")
+            elif isinstance(data, dict) and "description" in data:
+                with st.expander(f"**{subsystem}**"):
+                    st.write(data["description"])
+                    if "key_areas" in data:
+                        for area in data["key_areas"]:
+                            st.markdown(f"- {area}")
+
+    # Standards Reference Library
+    with st.container(border=True):
+        st.subheader("Standards Reference Library")
+        for key, std in STANDARDS_MAP.items():
+            with st.expander(f"**{key}** - {std['title']}"):
+                st.markdown(f"**Category:** {std['category']}")
+                st.write(std["summary"])
+                market_flags = " ".join(MARKETS[m]["flag"] for m in std["applicableMarkets"] if m in MARKETS)
+                st.caption(f"Markets: {market_flags}")
+                if std["deviceTypes"] != ["all"]:
+                    st.caption(f"Device types: {', '.join(std['deviceTypes'])}")
+
+
+# ══════════════════════════════════════════════════════════════════
+# TAB: AI ADVISOR
+# ══════════════════════════════════════════════════════════════════
+
+def render_ai_advisor():
+    st.header("AI Regulatory Advisor")
+    p = profile()
+    context_note = f"Context: **{p['name']}** profile is loaded." if p["name"] else "No product profile loaded - configure one for context-aware advice."
+    st.caption(f"Ask about regulatory requirements, testing, submission pathways, standards interpretation, and more. {context_note}")
+
+    # Display chat history
+    for msg in st.session_state["chat_messages"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Suggested questions (only when chat is empty)
+    if not st.session_state["chat_messages"]:
+        st.info("Try asking:")
+        suggestions = [
+            "What are the key differences between FDA 510(k) and EU MDR for Class II?",
+            "What does ANVISA require for GMP compliance?",
+            "List all biocompatibility tests for prolonged mucosal contact",
+            "Compare submission timelines across all my target markets",
+        ]
+        cols = st.columns(2)
+        for i, q in enumerate(suggestions):
+            with cols[i % 2]:
+                if st.button(q, key=f"suggest_{i}", use_container_width=True):
+                    st.session_state["_pending_question"] = q
+                    st.rerun()
+
+    # Handle pending suggested question
+    if "_pending_question" in st.session_state:
+        question = st.session_state.pop("_pending_question")
+        _process_chat_message(question)
+        st.rerun()
+
+    # Chat input
+    if user_input := st.chat_input("Ask about regulatory requirements, testing, pathways..."):
+        _process_chat_message(user_input)
+        st.rerun()
+
+
+def _process_chat_message(user_input: str):
+    """Process a chat message and get AI response."""
+    st.session_state["chat_messages"].append({"role": "user", "content": user_input})
+
+    system_prompt = build_system_prompt(profile(), gap_statuses())
+
+    messages = [{"role": "system", "content": system_prompt}]
+    # Include last 10 messages for context
+    for msg in st.session_state["chat_messages"][-10:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+
+    response = get_ai_response(messages, max_tokens=4000, temperature=0.4)
+    st.session_state["chat_messages"].append({"role": "assistant", "content": response})
+
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN ROUTER
+# ══════════════════════════════════════════════════════════════════
+
+tab = st.session_state["active_tab"]
+
+if tab == "Dashboard":
+    render_dashboard()
+elif tab == "Product Profile":
+    render_product_profile()
+elif tab == "Requirements Matrix":
+    render_requirements_matrix()
+elif tab == "Gap Analysis":
+    render_gap_analysis()
+elif tab == "Standards Library":
+    render_standards_library()
+elif tab == "AI Advisor":
+    render_ai_advisor()
