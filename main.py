@@ -139,6 +139,7 @@ def init_session_state():
         "gap_statuses": {},
         "chat_messages": [],
         "openai_client": None,
+        "ai_model": "o3-mini",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -164,18 +165,46 @@ def get_openai_client():
     return st.session_state["openai_client"]
 
 
+AI_MODELS = {
+    "o3-mini": {
+        "label": "o3-mini (Recommended)",
+        "description": "Best for regulatory analysis. Strong reasoning for interpreting standards, cross-referencing clauses, and complex compliance questions. Great balance of quality and cost.",
+        "supports_temperature": False,
+    },
+    "gpt-4.1": {
+        "label": "GPT-4.1",
+        "description": "Newest general-purpose model. Excellent at following the full standards knowledge base in context. Best for detailed document drafting, audit reports, and structured output.",
+        "supports_temperature": True,
+    },
+    "gpt-4o": {
+        "label": "GPT-4o",
+        "description": "Fast and capable multimodal model. Good all-rounder for quick regulatory questions, market comparisons, and general guidance.",
+        "supports_temperature": True,
+    },
+    "gpt-4o-mini": {
+        "label": "GPT-4o Mini",
+        "description": "Fastest and most affordable. Best for simple lookups, quick classification checks, and high-volume queries where cost matters. 95% cheaper than GPT-4o.",
+        "supports_temperature": True,
+    },
+}
+
+
 def get_ai_response(messages: List[Dict[str, str]], max_tokens: int = 4000, temperature: float = 0.4) -> str:
-    """Get a response from OpenAI using the latest model."""
+    """Get a response from OpenAI using the user-selected model."""
     client = get_openai_client()
     if not client:
         return "OpenAI API not configured. Add your openai_api_key to .streamlit/secrets.toml."
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        model = st.session_state.get("ai_model", "o3-mini")
+        model_info = AI_MODELS.get(model, {})
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        if model_info.get("supports_temperature", True):
+            kwargs["temperature"] = temperature
+        response = client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
     except Exception as e:
         return f"AI request failed: {e}"
@@ -651,6 +680,21 @@ def render_ai_advisor():
     p = profile()
     context_note = f"Context: **{p['name']}** profile is loaded." if p["name"] else "No product profile loaded - configure one for context-aware advice."
     st.caption(f"Ask about regulatory requirements, testing, submission pathways, standards interpretation, and more. {context_note}")
+
+    # Model selector
+    with st.expander("AI Model Settings", expanded=False):
+        model_keys = list(AI_MODELS.keys())
+        current_idx = model_keys.index(st.session_state.get("ai_model", "o3-mini"))
+        selected = st.radio(
+            "Select AI Model",
+            model_keys,
+            index=current_idx,
+            format_func=lambda k: AI_MODELS[k]["label"],
+            key="model_selector",
+        )
+        st.caption(AI_MODELS[selected]["description"])
+        if selected != st.session_state.get("ai_model"):
+            st.session_state["ai_model"] = selected
 
     # Display chat history
     for msg in st.session_state["chat_messages"]:
