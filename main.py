@@ -41,7 +41,8 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
 
-.block-container { padding-top: 1rem; }
+.block-container { padding-top: 2rem; }
+header[data-testid="stHeader"] { background: transparent; }
 
 .top-bar {
     background: #0a1628;
@@ -197,10 +198,11 @@ def get_ai_response(messages: List[Dict[str, str]], max_tokens: int = 4000, temp
     try:
         model = st.session_state.get("ai_model", "o3-mini")
         model_info = AI_MODELS.get(model, {})
+        token_param = "max_completion_tokens" if not model_info.get("supports_temperature", True) else "max_tokens"
         kwargs = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            token_param: max_tokens,
         }
         if model_info.get("supports_temperature", True):
             kwargs["temperature"] = temperature
@@ -251,7 +253,7 @@ TABS = [
 with st.sidebar:
     st.markdown("### Navigation")
     for label, tab_id in TABS:
-        if st.button(label, key=f"nav_{tab_id}", use_container_width=True,
+        if st.button(label, key=f"nav_{tab_id}", width="stretch",
                      type="primary" if st.session_state["active_tab"] == tab_id else "secondary"):
             st.session_state["active_tab"] = tab_id
             st.rerun()
@@ -468,7 +470,7 @@ def render_requirements_matrix():
             })
         if rows:
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
 
     # Testing Requirements
     with st.container(border=True):
@@ -484,7 +486,7 @@ def render_requirements_matrix():
                     "Status": "Pending",
                 })
             df_tests = pd.DataFrame(test_rows)
-            st.dataframe(df_tests, use_container_width=True, hide_index=True)
+            st.dataframe(df_tests, width="stretch", hide_index=True)
 
     # Applicable Standards
     with st.container(border=True):
@@ -713,7 +715,7 @@ def render_ai_advisor():
         cols = st.columns(2)
         for i, q in enumerate(suggestions):
             with cols[i % 2]:
-                if st.button(q, key=f"suggest_{i}", use_container_width=True):
+                if st.button(q, key=f"suggest_{i}", width="stretch"):
                     st.session_state["_pending_question"] = q
                     st.rerun()
 
