@@ -24,6 +24,7 @@ from src.standards_knowledge import (
     search_standards_knowledge,
     get_audit_checklist_for_clause,
 )
+from src.sitrep_knowledge import SITREP_SYSTEM_PROMPT, get_sitrep_context
 
 # ══════════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -129,6 +130,12 @@ WORKFLOWS = {
         "persona": "QMS Professionals",
         "steps": ["Scope", "Assessment", "Report"],
     },
+    "sitrep_assistant": {
+        "title": "SITREP Assistant",
+        "subtitle": "Ask questions about our internal resource hub — policies, tools, team, and more",
+        "persona": "All Employees",
+        "steps": ["Chat"],
+    },
 }
 
 
@@ -156,6 +163,9 @@ def init_session_state():
         "audit_scope": [],
         "pdac_category": None,
         "se_notes": {},
+        "sitrep_messages": [],
+        "sitrep_extra_kb": "",
+        "sitrep_admin_unlocked": False,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1118,6 +1128,132 @@ def render_gap_audit(step):
 
 
 # ══════════════════════════════════════════════════════════════════
+# WORKFLOW 7: SITREP ASSISTANT
+# ══════════════════════════════════════════════════════════════════
+
+def _sitrep_ai_response(user_input: str) -> str:
+    """Generate a SITREP-grounded AI response using the existing OpenAI client."""
+    client = get_openai_client()
+    if not client:
+        return "OpenAI API not configured. Add your openai_api_key to .streamlit/secrets.toml."
+    kb = get_sitrep_context(st.session_state.get("sitrep_extra_kb", ""))
+    system = SITREP_SYSTEM_PROMPT + "\n\n--- KNOWLEDGE BASE ---\n" + kb + "\n--- END KNOWLEDGE BASE ---"
+    messages = [{"role": "system", "content": system}]
+    for m in st.session_state["sitrep_messages"][-12:]:
+        messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": user_input})
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=1200,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Request failed: {e}"
+
+
+def render_sitrep_assistant(_step):
+    st.header("SITREP Assistant")
+    st.caption("Ask anything about our internal resource hub — policies, tools, team directory, onboarding, and more.")
+
+    tab_chat, tab_admin = st.tabs(["Chat", "Admin / Knowledge Base"])
+
+    with tab_chat:
+        for msg in st.session_state["sitrep_messages"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if not st.session_state["sitrep_messages"]:
+            st.markdown("**Try asking:**")
+            suggestions = [
+                "What is Project SITREP?",
+                "How do I submit a help desk ticket?",
+                "Where is the team directory?",
+                "What's the time-off policy?",
+                "What tools do we use and how do I get access?",
+            ]
+            cols = st.columns(2)
+            for i, q in enumerate(suggestions):
+                with cols[i % 2]:
+                    if st.button(q, key=f"sitrep_sugg_{i}", use_container_width=True):
+                        st.session_state["sitrep_messages"].append({"role": "user", "content": q})
+                        with st.spinner("Thinking..."):
+                            answer = _sitrep_ai_response(q)
+                        st.session_state["sitrep_messages"].append({"role": "assistant", "content": answer})
+                        st.rerun()
+
+        if user_input := st.chat_input("Ask about SITREP resources, policies, tools...", key="sitrep_chat_input"):
+            st.session_state["sitrep_messages"].append({"role": "user", "content": user_input})
+            with st.chat_message("user"):
+                st.markdown(user_input)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    answer = _sitrep_ai_response(user_input)
+                st.markdown(answer)
+            st.session_state["sitrep_messages"].append({"role": "assistant", "content": answer})
+
+        if st.session_state["sitrep_messages"]:
+            if st.button("Clear conversation", key="sitrep_clear"):
+                st.session_state["sitrep_messages"] = []
+                st.rerun()
+
+    with tab_admin:
+        st.markdown("### Knowledge Base Management")
+        st.caption(
+            "Paste content from your Google Intranet (Google Sites) pages here. "
+            "The AI uses this as its source of truth. Changes here last for this session — "
+            "to make them permanent, update src/sitrep_knowledge.py."
+        )
+
+        if not st.session_state["sitrep_admin_unlocked"]:
+            pw = st.text_input("Admin password", type="password", key="sitrep_pw")
+            try:
+                expected = st.secrets.get("sitrep_admin_password", "FDSwVSTr8595%$%")
+            except Exception:
+                expected = "FDSwVSTr8595%$%"
+            if st.button("Unlock", key="sitrep_unlock"):
+                if pw == expected:
+                    st.session_state["sitrep_admin_unlocked"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+        else:
+            st.success("Admin mode active")
+            extra = st.text_area(
+                "Paste Google Sites content here",
+                value=st.session_state["sitrep_extra_kb"],
+                height=300,
+                placeholder=(
+                    "Paste content from your Google Intranet pages.\n\n"
+                    "Example:\n=== Benefits ===\nEmployees receive health, dental, and vision starting Day 1...\n"
+                ),
+                key="sitrep_kb_input",
+            )
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("Save to session", key="sitrep_save_kb", type="primary"):
+                    st.session_state["sitrep_extra_kb"] = extra
+                    st.success("Knowledge base updated.")
+            with col2:
+                st.caption("To persist permanently: paste this into SITREP_KNOWLEDGE_BASE in src/sitrep_knowledge.py")
+
+            st.divider()
+            st.markdown("**How to copy content from Google Sites:**")
+            st.markdown(
+                "1. Open the Google Intranet page in Chrome\n"
+                "2. Press `Ctrl+A` to select all, `Ctrl+C` to copy\n"
+                "3. Paste into the text area above and click **Save to session**\n"
+                "4. To make permanent: copy into `src/sitrep_knowledge.py` and redeploy"
+            )
+
+            if st.button("Lock admin", key="sitrep_lock"):
+                st.session_state["sitrep_admin_unlocked"] = False
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════
 # MAIN ROUTER
 # ══════════════════════════════════════════════════════════════════
 
@@ -1144,6 +1280,8 @@ if show_chat:
             render_standards_edu(step)
         elif wf == "gap_audit":
             render_gap_audit(step)
+        elif wf == "sitrep_assistant":
+            render_sitrep_assistant(step)
 else:
     if wf is None:
         render_landing_page()
@@ -1159,3 +1297,5 @@ else:
         render_standards_edu(step)
     elif wf == "gap_audit":
         render_gap_audit(step)
+    elif wf == "sitrep_assistant":
+        render_sitrep_assistant(step)
