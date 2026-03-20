@@ -1,17 +1,18 @@
 # requirements.txt - Brent Crude Oil Live Tracker Dashboard
 
-# Core Streamlit
+# Core
 streamlit>=1.45.0
+streamlit-autorefresh>=1.0.1
 
-# Data processing
+# Data
 pandas>=2.1.0
 numpy>=1.24.0
 scipy>=1.11.0
 
-# Charting (THIS WAS MISSING - caused the ModuleNotFoundError)
+# Charting
 plotly>=5.18.0
 
-# Live market data
+# Market data
 yfinance>=0.2.31
 
 # Utilities
