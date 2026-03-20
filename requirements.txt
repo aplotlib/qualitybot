@@ -3,7 +3,7 @@
 # Core Streamlit and web framework
 streamlit>=1.45.0
 streamlit-option-menu>=0.3.6
-
+plotly
 # Data processing
 pandas>=2.1.0
 numpy>=1.24.0
