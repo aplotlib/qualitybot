@@ -3,7 +3,7 @@
 OVERWATCH: TACTICAL COMMODITY DASHBOARD
 ===========================================
 Primary Focus: Brent Crude, Hormuz Theater, Med-Dev Supply Chain Impacts
-Includes Live AIS Maritime and ADS-B Flight Tracking
+Includes Live AIS Maritime, ADS-B Flight Tracking, and Jump-Diffusion MC
 """
 
 import streamlit as st
@@ -12,7 +12,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -28,8 +28,6 @@ try:
 except ImportError:
     pass
 
-TARGET_PRICE = 94.50
-TARGET_DATE = datetime(2026, 6, 15)
 CACHE_TTL = 120
 
 # ---------------------------------------------------------------------------
@@ -65,7 +63,7 @@ st.markdown("""
 
 .stApp { background-color: var(--bg-base); background-image: radial-gradient(circle at 50% 0%, #0f172a 0%, #020617 70%); color: var(--text-main); }
 h1, h2, h3 { font-family: var(--sans); font-weight: 800; letter-spacing: -1px; text-transform: uppercase; color: #fff; }
-p, span, div { font-family: var(--sans); }
+p, span, div, label { font-family: var(--sans); }
 .mono-text { font-family: var(--mono); text-transform: uppercase; }
 
 /* TACTICAL PANELS */
@@ -90,6 +88,9 @@ p, span, div { font-family: var(--sans); }
 .alert-critical { border-left-color: var(--red); box-shadow: 0 0 15px rgba(239, 68, 68, 0.1); }
 .alert-critical .panel-value { color: var(--red); text-shadow: 0 0 10px rgba(239, 68, 68, 0.5); }
 .alert-critical::before, .alert-critical::after { border-color: var(--red); }
+.alert-warn { border-left-color: var(--amber); box-shadow: 0 0 15px rgba(245, 158, 11, 0.1); }
+.alert-warn .panel-value { color: var(--amber); text-shadow: 0 0 10px rgba(245, 158, 11, 0.5); }
+.alert-warn::before, .alert-warn::after { border-color: var(--amber); }
 
 /* TERMINAL FEED */
 .terminal-feed { font-family: var(--mono); font-size: 12px; color: #cbd5e1; height: 300px; overflow-y: auto; padding: 10px; background: rgba(0,0,0,0.5); border: 1px solid #1e293b; }
@@ -97,7 +98,10 @@ p, span, div { font-family: var(--sans); }
 .term-date { color: var(--cyan); margin-right: 10px; }
 .term-crit { color: var(--red); }
 
+/* STREAMLIT OVERRIDES */
 #MainMenu, footer, header {visibility: hidden;}
+div[data-baseweb="input"] { background-color: rgba(15, 23, 42, 0.8) !important; border: 1px solid var(--cyan) !important; color: #fff !important; }
+div[data-baseweb="select"] > div { background-color: rgba(15, 23, 42, 0.8) !important; border: 1px solid var(--cyan) !important; color: #fff !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -125,35 +129,56 @@ def fetch_stratcom_data():
     return result
 
 # ---------------------------------------------------------------------------
-# PREDICTIVE ANALYTICS
+# JUMP-DIFFUSION MONTE CARLO ENGINE
 # ---------------------------------------------------------------------------
-def tactical_monte_carlo(df, current_price, target_price, days_to_target, n_sims=50_000):
-    if df.empty or len(df) < 60: return None
+def tactical_jump_diffusion_mc(df, current_price, target_price, days_to_target, regime, n_sims=30_000):
+    """
+    Advanced Stochastic Regime-Switching Jump-Diffusion Model.
+    Simulates price paths using Geometric Brownian Motion + Poisson Jumps.
+    """
+    if df.empty or len(df) < 60: return None, None
     log_ret = np.log(df["Close"] / df["Close"].shift(1)).dropna()
     
     mu_base = log_ret.mean()
     sig_base = log_ret.std()
-    mu_war = mu_base + 0.0015  
-    sig_war = sig_base * 2.2   
+    
+    # REGIME SWITCHING LOGIC
+    if regime == "NORMAL (HISTORICAL)":
+        mu, sig = mu_base, sig_base
+        jump_prob, jump_mu, jump_sig = 0.001, 0.02, 0.01
+    elif regime == "BLOCKADE (ACTIVE)":
+        mu, sig = mu_base + 0.001, sig_base * 1.8
+        jump_prob, jump_mu, jump_sig = 0.015, 0.05, 0.03 # 1.5% chance of 5% spike
+    else: # REGIONAL ESCALATION
+        mu, sig = mu_base + 0.002, sig_base * 2.5
+        jump_prob, jump_mu, jump_sig = 0.04, 0.10, 0.06 # 4% chance of 10% spike
     
     np.random.seed(42)
-    prices = np.zeros((n_sims, max(1, days_to_target)))
+    n_days = max(1, days_to_target)
+    prices = np.zeros((n_sims, n_days))
     prices[:, 0] = current_price
     
-    for t in range(1, max(1, days_to_target)):
-        jump = np.where(np.random.random(n_sims) < 0.01, np.random.normal(0.05, 0.02, n_sims), 0)
-        shock = np.random.normal(mu_war, sig_war, n_sims)
-        prices[:, t] = prices[:, t - 1] * np.exp(shock + jump)
+    for t in range(1, n_days):
+        # Continuous diffusion (Brownian motion)
+        shock = np.random.normal(mu, sig, n_sims)
+        # Discrete jumps (Poisson process)
+        jumps = np.where(np.random.random(n_sims) < jump_prob, np.random.normal(jump_mu, jump_sig, n_sims), 0)
+        
+        prices[:, t] = prices[:, t - 1] * np.exp(shock + jumps)
         
     finals = prices[:, -1]
     
-    return {
+    stats = {
         "p_hit_target": round(np.mean(finals >= target_price) * 100, 1),
         "p_above_120": round(np.mean(finals >= 120) * 100, 1),
         "median": round(np.percentile(finals, 50), 2),
+        "mean": round(np.mean(finals), 2),
         "p95": round(np.percentile(finals, 95), 2),
         "p5": round(np.percentile(finals, 5), 2),
-    }, prices
+        "sims": n_sims,
+        "regime": regime
+    }
+    return stats, prices
 
 # ---------------------------------------------------------------------------
 # CHARTING FACTORY
@@ -165,13 +190,34 @@ CHART_THEME = dict(
     yaxis=dict(gridcolor="rgba(30, 41, 59, 0.5)", zeroline=False)
 )
 
-def build_hud_chart(df, title, color, fill=True):
+def build_fan_chart(historical_df, paths, start_price, days_to_target):
+    """Builds a predictive cone of uncertainty mapping future dates."""
+    hist = historical_df.tail(60)
+    
+    # Create future date index
+    future_dates = [datetime.now() + timedelta(days=i) for i in range(days_to_target)]
+    
+    # Calculate percentiles across all simulations
+    p5 = np.percentile(paths, 5, axis=0)
+    p50 = np.percentile(paths, 50, axis=0)
+    p95 = np.percentile(paths, 95, axis=0)
+    
     fig = go.Figure()
+    
+    # Historical Trace
+    fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], mode="lines", name="Historical", line=dict(color="#94a3b8", width=2)))
+    
+    # Predictive Cone (P5 to P95)
+    fig.add_trace(go.Scatter(x=future_dates, y=p95, mode="lines", line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(
-        x=df.index, y=df["Close"], mode="lines", line=dict(color=color, width=1.5),
-        fill="tozeroy" if fill else "none", fillcolor=color.replace('rgb', 'rgba').replace(')', ', 0.1)') if fill else None
+        x=future_dates, y=p5, mode="lines", line=dict(width=0),
+        fill="tonexty", fillcolor="rgba(6, 182, 212, 0.15)", name="90% Confidence Interval"
     ))
-    fig.update_layout(**CHART_THEME, height=250, title=dict(text=title, font=dict(size=14, color="#fff")))
+    
+    # Median Prediction
+    fig.add_trace(go.Scatter(x=future_dates, y=p50, mode="lines", name="Median Path", line=dict(color="#06b6d4", width=2, dash="dot")))
+    
+    fig.update_layout(**CHART_THEME, height=350, title=dict(text="PRICE TRAJECTORY: CONE OF UNCERTAINTY", font=dict(size=14, color="#fff")), showlegend=True, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     return fig
 
 # ---------------------------------------------------------------------------
@@ -187,13 +233,24 @@ with st.sidebar:
     menu = st.radio("OPERATIONAL VIEWS", ["1. GLOBAL ENERGY (BRENT)", "2. HORMUZ THEATER [LIVE RECON]", "3. MED-DEV SUPPLY CHAIN"])
     
     st.markdown("---")
-    st.markdown("<div class='tac-panel alert-critical'><div class='panel-title'>THREAT LEVEL</div><div class='panel-value' style='font-size: 20px;'>ELEVATED (2)</div></div>", unsafe_allow_html=True)
-    st.markdown("<p class='mono-text' style='color:#94a3b8; font-size:9px;'>FINANCIALS: LIVE YFINANCE<br>MAPS: LIVE SATELLITE AIS/ADSB<br>SCENARIO: WARGAME SIMULATION</p>", unsafe_allow_html=True)
+    st.markdown("<div class='panel-title'>PREDICTIVE TARGETING</div>", unsafe_allow_html=True)
+    target_date = st.date_input("ESTIMATE PRICE ON DATE:", datetime.now() + timedelta(days=90))
+    target_price = st.number_input("TARGET PRICE THRESHOLD ($):", min_value=10.0, max_value=300.0, value=94.50, step=0.5)
+    regime = st.selectbox("THREAT REGIME (VOL/DRIFT)", ["NORMAL (HISTORICAL)", "BLOCKADE (ACTIVE)", "REGIONAL ESCALATION"], index=1)
+    
+    st.markdown("---")
+    st.markdown("<p class='mono-text' style='color:#94a3b8; font-size:9px;'>FINANCIALS: LIVE YFINANCE<br>MAPS: LIVE SATELLITE AIS/ADSB<br>MODEL: JUMP-DIFFUSION MONTE CARLO</p>", unsafe_allow_html=True)
+
+    if st.button("EXECUTE REFRESH [F5]"):
+        st.cache_data.clear()
+        st.rerun()
 
 brent = data.get("brent_1y", pd.DataFrame())
 brent_1d = data.get("brent_1d", pd.DataFrame())
 current_bz = brent_1d["Close"].iloc[-1] if not brent_1d.empty else (brent["Close"].iloc[-1] if not brent.empty else 0)
 bz_change = current_bz - brent["Close"].iloc[-2] if len(brent) > 1 else 0
+
+days_out = max(1, (target_date - datetime.now().date()).days)
 
 # ===========================================================================
 # VIEW 1: GLOBAL ENERGY
@@ -212,39 +269,51 @@ if menu.startswith("1"):
         spread = current_bz - cur_wti
         st.markdown(f"<div class='tac-panel'><div class='panel-title'>BZ/WTI SPREAD</div><div class='panel-value'>${spread:.2f}</div></div>", unsafe_allow_html=True)
     with c4:
-        st.markdown(f"<div class='tac-panel'><div class='panel-title'>TARGET: {TARGET_DATE.strftime('%d%b%y').upper()}</div><div class='panel-value' style='color:var(--amber);'>${TARGET_PRICE:.2f}</div></div>", unsafe_allow_html=True)
+        panel_class = "alert-warn" if regime == "BLOCKADE (ACTIVE)" else "alert-critical" if regime == "REGIONAL ESCALATION" else ""
+        st.markdown(f"<div class='tac-panel {panel_class}'><div class='panel-title'>THREAT REGIME</div><div class='panel-value' style='font-size:18px; margin-top:8px;'>{regime.split()[0]}</div></div>", unsafe_allow_html=True)
 
-    c_chart, c_pred = st.columns([7, 3])
+    c_chart, c_pred = st.columns([6, 4])
+    
+    mc_res, paths = tactical_jump_diffusion_mc(brent, current_bz, target_price, days_out, regime)
+    
     with c_chart:
-        if not brent.empty:
-            fig = build_hud_chart(brent.tail(180), "6-MONTH BRENT PRICE ACTION", "rgb(6, 182, 212)")
-            fig.update_layout(height=450)
+        if not brent.empty and paths is not None:
+            fig = build_fan_chart(brent, paths, current_bz, days_out)
             st.plotly_chart(fig, use_container_width=True)
             
     with c_pred:
-        days_out = max(1, (TARGET_DATE - datetime.now()).days)
-        mc_res, _ = tactical_monte_carlo(brent, current_bz, TARGET_PRICE, days_out)
-        
         if mc_res:
-            st.markdown("<div class='tac-panel' style='height: 450px;'>", unsafe_allow_html=True)
-            st.markdown("<div class='panel-title'>STOCHASTIC REGIME-SWITCHING MODEL</div>", unsafe_allow_html=True)
-            st.markdown("<p class='mono-text' style='font-size:10px; color:#64748b;'>SIMULATIONS: 50,000 | JUMP-DIFFUSION ENABLED</p><hr style='border-color:#1e293b'>", unsafe_allow_html=True)
+            st.markdown("<div class='tac-panel' style='height: 350px;'>", unsafe_allow_html=True)
+            st.markdown("<div class='panel-title'>JUMP-DIFFUSION PROJECTION</div>", unsafe_allow_html=True)
+            st.markdown(f"<p class='mono-text' style='font-size:10px; color:#64748b;'>TARGET DATE: {target_date.strftime('%d %b %Y').upper()} | SIMS: 30,000</p><hr style='border-color:#1e293b'>", unsafe_allow_html=True)
+            
+            p1, p2 = st.columns(2)
+            with p1:
+                st.markdown(f"""
+                <div style='margin-bottom: 15px;'>
+                    <div class='mono-text' style='color:#94a3b8; font-size:11px;'>P(PRICE >= ${target_price:.2f})</div>
+                    <div class='mono-text' style='color:var(--cyan); font-size:22px;'>{mc_res['p_hit_target']}%</div>
+                </div>
+                <div style='margin-bottom: 15px;'>
+                    <div class='mono-text' style='color:#94a3b8; font-size:11px;'>P(SHOCK >= $120)</div>
+                    <div class='mono-text' style='color:var(--red); font-size:22px;'>{mc_res['p_above_120']}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with p2:
+                st.markdown(f"""
+                <div style='margin-bottom: 15px;'>
+                    <div class='mono-text' style='color:#94a3b8; font-size:11px;'>EST. MEDIAN PRICE</div>
+                    <div class='mono-text' style='color:#fff; font-size:22px;'>${mc_res['median']}</div>
+                </div>
+                <div style='margin-bottom: 15px;'>
+                    <div class='mono-text' style='color:#94a3b8; font-size:11px;'>EST. MEAN PRICE</div>
+                    <div class='mono-text' style='color:#fff; font-size:22px;'>${mc_res['mean']}</div>
+                </div>
+                """, unsafe_allow_html=True)
             
             st.markdown(f"""
-            <div style='margin-bottom: 20px;'>
-                <div class='mono-text' style='color:#94a3b8; font-size:12px;'>P(TARGET >= ${TARGET_PRICE})</div>
-                <div class='mono-text' style='color:var(--cyan); font-size:24px;'>{mc_res['p_hit_target']}%</div>
-            </div>
-            <div style='margin-bottom: 20px;'>
-                <div class='mono-text' style='color:#94a3b8; font-size:12px;'>MEDIAN PROJECTION</div>
-                <div class='mono-text' style='color:#fff; font-size:24px;'>${mc_res['median']}</div>
-            </div>
-            <div style='margin-bottom: 20px;'>
-                <div class='mono-text' style='color:#94a3b8; font-size:12px;'>P(EXTREME SHOCK >= $120)</div>
-                <div class='mono-text' style='color:var(--red); font-size:24px;'>{mc_res['p_above_120']}%</div>
-            </div>
             <div style='margin-top: auto; padding-top:10px; border-top: 1px solid #1e293b;'>
-                <div class='mono-text' style='font-size:11px; color:#94a3b8;'>90% CONFIDENCE INTERVAL</div>
+                <div class='mono-text' style='font-size:11px; color:#94a3b8;'>90% CONFIDENCE INTERVAL (TARGET DATE)</div>
                 <div class='mono-text' style='color:var(--amber); font-size:14px;'>[{mc_res['p5']} - {mc_res['p95']}]</div>
             </div>
             </div>
@@ -259,27 +328,17 @@ elif menu.startswith("2"):
     
     c1, c2, c3 = st.columns(3)
     c1.markdown("<div class='tac-panel alert-critical'><div class='panel-title'>BLOCKADE STATUS [SIMULATED]</div><div class='panel-value'>ACTIVE</div></div>", unsafe_allow_html=True)
-    c2.markdown("<div class='tac-panel'><div class='panel-title'>CHOKEPOINT</div><div class='panel-value'>26.5° N, 56.2° E</div></div>", unsafe_allow_html=True)
+    c2.markdown("<div class='tac-panel'><div class='panel-title'>CHOKEPOINT</div><div class='panel-value'>26.4° N, 56.2° E</div></div>", unsafe_allow_html=True)
     c3.markdown("<div class='tac-panel alert-critical'><div class='panel-title'>GLOBAL FLOW DISRUPTION [SIMULATED]</div><div class='panel-value'>95%</div></div>", unsafe_allow_html=True)
     
-    # Live Trackers
     c_ship, c_air = st.columns(2)
     
     with c_ship:
         st.markdown("<div class='panel-title' style='color:var(--cyan);'>LIVE AIS MARITIME RADAR (STRAIT OF HORMUZ)</div>", unsafe_allow_html=True)
-        # Embed MarineTraffic Free Widget
         marine_traffic_html = """
         <script type="text/javascript">
-            width='100%';
-            height='450';
-            border='0';
-            shownames='false';
-            latitude='26.4';
-            longitude='56.2';
-            zoom='7';
-            maptype='2'; // Satellite
-            trackvessel='0';
-            fleet='';
+            width='100%'; height='450'; border='0'; shownames='false';
+            latitude='26.4'; longitude='56.2'; zoom='7'; maptype='2'; trackvessel='0'; fleet='';
         </script>
         <script type="text/javascript" src="https://www.marinetraffic.com/js/embed.js"></script>
         <div style="font-family: monospace; font-size: 10px; color: #64748b; margin-top:5px; text-align: right;">DATA: MARINETRAFFIC AIS</div>
@@ -288,7 +347,6 @@ elif menu.startswith("2"):
 
     with c_air:
         st.markdown("<div class='panel-title' style='color:var(--cyan);'>LIVE ADS-B FLIGHT RADAR (PERSIAN GULF)</div>", unsafe_allow_html=True)
-        # Embed ADSB Exchange global un-filtered flight tracker
         adsb_url = "https://globe.adsbexchange.com/?lat=26.4&lon=56.2&zoom=7&hideSidebar=1&hideButtons=1"
         components.iframe(adsb_url, height=450)
         st.markdown("<div style='font-family: monospace; font-size: 10px; color: #64748b; text-align: right;'>DATA: ADSB EXCHANGE RAW TELEMETRY</div>", unsafe_allow_html=True)
