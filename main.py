@@ -1,1301 +1,863 @@
+#!/usr/bin/env python3
+"""
+BRENT CRUDE OIL - LIVE TRACKER DASHBOARD (Streamlit)
+=====================================================
+Run:  pip install -r requirements.txt
+      streamlit run brent_dashboard_st.py
+
+Pulls real-time Brent crude futures (BZ=F) and WTI (CL=F) via yfinance.
+Auto-refreshes every 30 seconds.
+"""
+
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-from typing import List, Dict
-import openai
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import time
 
-from src.regulatory_data import (
-    MARKETS,
-    ISO_13485_CLAUSES,
-    STANDARDS_MAP,
-    GAP_ANALYSIS_ITEMS,
-    REQUIREMENT_TIERS,
-    FIVETEN_K_GUIDANCE,
-    PDAC_HCPCS_GUIDANCE,
-    get_applicable_standards,
-    get_gap_stats,
-    get_classification_info,
-    get_tiered_requirements,
-    build_system_prompt,
-)
-from src.standards_knowledge import (
-    ALL_STANDARDS_KNOWLEDGE,
-    FDA_AUDIT_CHECKLIST,
-    DOCUMENT_REGISTRY,
-    search_standards_knowledge,
-    get_audit_checklist_for_clause,
-)
-from src.sitrep_knowledge import SITREP_SYSTEM_PROMPT, get_sitrep_context
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE CONFIG
-# ══════════════════════════════════════════════════════════════════
-
+# ---------------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="RegIntel - Medical Device Regulatory Intelligence",
-    page_icon="R",
+    page_title="Brent Crude Oil - Live Tracker",
+    page_icon="🛢️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ══════════════════════════════════════════════════════════════════
-# CUSTOM CSS
-# ══════════════════════════════════════════════════════════════════
+# Target
+TARGET_PRICE = 94.50
+TARGET_DATE = datetime(2026, 6, 15)
+TARGET_DATE_STR = "June 15, 2026"
 
+REFRESH_INTERVAL = 30  # seconds
+
+# ---------------------------------------------------------------------------
+# CUSTOM CSS
+# ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Source+Serif+4:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
 
-.block-container { padding-top: 2rem; }
-header[data-testid="stHeader"] { background: transparent; }
+    .stApp {
+        background: linear-gradient(165deg, #06080f 0%, #0c1019 40%, #0f1520 100%);
+    }
+    .main .block-container { padding-top: 1.5rem; max-width: 1400px; }
 
-.top-bar {
-    background: #0a1628;
-    padding: 12px 24px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 1.5rem;
-    border-bottom: 1px solid #1e3a5f;
-}
-.top-bar .logo {
-    width: 32px; height: 32px; border-radius: 6px;
-    background: linear-gradient(135deg, #38bdf8, #3b82f6);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; font-weight: 700; color: #fff;
-}
-.top-bar .title { color: #fff; font-weight: 700; font-size: 16px; font-family: 'Source Serif 4', Georgia, serif; }
-.top-bar .subtitle { color: #475569; font-size: 12px; margin-left: 6px; }
+    h1, h2, h3, h4, h5, h6 { font-family: 'Outfit', sans-serif !important; }
+    p, span, div, li { font-family: 'Outfit', sans-serif; }
 
-.hero {
-    background: linear-gradient(135deg, #0a1628 0%, #1a2d50 50%, #0f2040 100%);
-    border-radius: 16px; padding: 32px 36px; color: #fff;
-    position: relative; overflow: hidden; margin-bottom: 1.5rem;
-}
-.hero h2 { font-size: 24px; font-weight: 700; margin: 0; font-family: 'Source Serif 4', Georgia, serif; }
-.hero p { color: #94a3b8; margin-top: 8px; font-size: 14px; line-height: 1.6; }
+    .big-price {
+        font-family: 'Outfit', sans-serif;
+        font-size: 56px;
+        font-weight: 800;
+        letter-spacing: -2px;
+        text-shadow: 0 0 40px rgba(34,211,238,0.15);
+        line-height: 1.1;
+    }
+    .change-up { color: #22c55e; font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+    .change-down { color: #ef4444; font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .dim { color: #64748b; font-size: 12px; }
+    .cyan { color: #22d3ee; }
+    .orange { color: #f97316; }
+    .green { color: #22c55e; }
+    .red { color: #ef4444; }
+    .purple { color: #a78bfa; }
+    .yellow { color: #fbbf24; }
 
-.tier-bare-minimum { border-left: 4px solid #dc2626; }
-.tier-highly-suggested { border-left: 4px solid #f59e0b; }
-.tier-nice-to-have { border-left: 4px solid #3b82f6; }
-.tier-not-needed { border-left: 4px solid #94a3b8; }
+    .metric-card {
+        background: rgba(15,21,32,0.7);
+        border: 1px solid rgba(100,116,139,0.12);
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 8px;
+    }
+    .metric-label {
+        font-size: 10px;
+        color: #64748b;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        font-family: 'JetBrains Mono', monospace;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 18px;
+        font-weight: 700;
+        color: #f1f5f9;
+    }
 
-.section-header {
-    font-size: 18px; font-weight: 600; color: #0f172a;
-    font-family: 'Source Serif 4', Georgia, serif;
-    margin: 0 0 16px 0;
-}
+    .conflict-card {
+        background: linear-gradient(135deg, rgba(239,68,68,0.06) 0%, rgba(249,115,22,0.04) 100%);
+        border: 1px solid rgba(239,68,68,0.2);
+        border-radius: 14px;
+        padding: 20px 24px;
+    }
+
+    .target-card {
+        background: linear-gradient(135deg, rgba(34,211,238,0.06) 0%, rgba(167,139,250,0.04) 100%);
+        border: 1px solid rgba(34,211,238,0.2);
+        border-radius: 14px;
+        padding: 20px 24px;
+    }
+
+    .analyst-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(100,116,139,0.08);
+        font-size: 13px;
+    }
+
+    .stMetric > div { background: rgba(15,21,32,0.5); border-radius: 10px; padding: 12px; }
+
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    .live-pulse {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        animation: pulse 2s infinite;
+        margin-right: 8px;
+        vertical-align: middle;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(1.4); }
+    }
+
+    div[data-testid="stSidebar"] {
+        background: rgba(8,10,18,0.95);
+        border-right: 1px solid rgba(100,116,139,0.1);
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOWS
-# ══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# DATA FETCHING
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=REFRESH_INTERVAL)
+def fetch_brent_data():
+    """Pull live Brent + WTI data from Yahoo Finance."""
+    brent = yf.Ticker("BZ=F")
+    wti = yf.Ticker("CL=F")
 
-WORKFLOWS = {
-    "market_entry": {
-        "title": "Bring a Product to Market",
-        "subtitle": "From device description to full requirements -- tiered by priority",
-        "persona": "Product Developers",
-        "steps": ["Describe Your Device", "Classification & Details", "Your Requirements", "Timeline & Costs"],
-    },
-    "fiveten_k": {
-        "title": "510(k) & Predicate Questions",
-        "subtitle": "Find predicates, understand substantial equivalence, prep your submission",
-        "persona": "RA Specialists",
-        "steps": ["Device Info", "Predicate Search", "SE Comparison", "Submission Checklist"],
-    },
-    "testing": {
-        "title": "What Testing Do I Need?",
-        "subtitle": "Quick profile to tiered testing requirements in 60 seconds",
-        "persona": "Product Developers",
-        "steps": ["Quick Profile", "Your Testing Requirements"],
-    },
-    "pdac_hcpcs": {
-        "title": "PDAC / HCPCS Billing Codes",
-        "subtitle": "Documentation requirements for billing code submissions",
-        "persona": "RA / Reimbursement Specialists",
-        "steps": ["Product Category", "Submission Requirements"],
-    },
-    "standards_edu": {
-        "title": "Understand a Standard",
-        "subtitle": "ISO 13485, QSR vs QMSR, and more -- explained practically",
-        "persona": "QMS Professionals",
-        "steps": ["Pick a Topic", "Deep Dive"],
-    },
-    "gap_audit": {
-        "title": "Gap Analysis & Audit Prep",
-        "subtitle": "Assess your QMS readiness clause by clause",
-        "persona": "QMS Professionals",
-        "steps": ["Scope", "Assessment", "Report"],
-    },
-    "sitrep_assistant": {
-        "title": "SITREP Assistant",
-        "subtitle": "Ask questions about our internal resource hub — policies, tools, team, and more",
-        "persona": "All Employees",
-        "steps": ["Chat"],
-    },
-}
+    # Intraday 1-min
+    intraday = brent.history(period="1d", interval="1m")
 
+    # 1-year daily
+    hist_1y = brent.history(period="1y", interval="1d")
 
-# ══════════════════════════════════════════════════════════════════
-# SESSION STATE
-# ══════════════════════════════════════════════════════════════════
+    # 5-year weekly for long view
+    hist_5y = brent.history(period="5y", interval="1wk")
 
-def init_session_state():
-    defaults = {
-        "active_workflow": None,
-        "workflow_step": 0,
-        "product_profile": {
-            "name": "", "description": "", "class_us": "", "class_eu": "",
-            "contact_type": "", "contact_duration": "", "sterile": False,
-            "sterilization_method": "", "has_software": False, "software_safety_class": "",
-            "is_electrical": False, "is_implantable": False, "target_markets": [],
-            "intended_use": "", "predicate_device": "",
-        },
-        "gap_statuses": {},
-        "chat_messages": [],
-        "openai_client": None,
-        "ai_model": "o3-mini",
-        "show_chat": False,
-        "edu_topic": None,
-        "audit_scope": [],
-        "pdac_category": None,
-        "se_notes": {},
-        "sitrep_messages": [],
-        "sitrep_extra_kb": "",
-        "sitrep_admin_unlocked": False,
+    # WTI for spread
+    wti_1y = wti.history(period="1y", interval="1d")
+    wti_intraday = wti.history(period="1d", interval="1m")
+
+    # Current info
+    info = brent.fast_info
+
+    return {
+        "intraday": intraday,
+        "hist_1y": hist_1y,
+        "hist_5y": hist_5y,
+        "wti_1y": wti_1y,
+        "wti_intraday": wti_intraday,
+        "info": info,
+        "fetch_time": datetime.now(),
     }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
-
-init_session_state()
 
 
-# ══════════════════════════════════════════════════════════════════
-# NAVIGATION
-# ══════════════════════════════════════════════════════════════════
+def compute_target_probability(hist_df, current_price, target_price, days_to_target):
+    """
+    Monte Carlo + historical vol approach to estimate probability of
+    Brent hitting target_price by target_date.
+    """
+    if hist_df.empty or len(hist_df) < 30:
+        return None, None, None
 
-def navigate_to(workflow_id, step=0):
-    st.session_state["active_workflow"] = workflow_id
-    st.session_state["workflow_step"] = step
-    st.rerun()
+    # Daily log returns
+    closes = hist_df["Close"].dropna()
+    log_returns = np.log(closes / closes.shift(1)).dropna()
 
-def navigate_home():
-    st.session_state["active_workflow"] = None
-    st.session_state["workflow_step"] = 0
-    st.rerun()
+    mu = log_returns.mean()
+    sigma = log_returns.std()
 
-def advance_step():
-    st.session_state["workflow_step"] += 1
-    st.rerun()
+    n_sims = 50_000
+    n_days = max(1, days_to_target)
 
-def go_to_step(step):
-    st.session_state["workflow_step"] = step
-    st.rerun()
+    # GBM simulation
+    np.random.seed(42)
+    daily_shocks = np.random.normal(mu, sigma, (n_sims, n_days))
+    price_paths = current_price * np.exp(np.cumsum(daily_shocks, axis=1))
+    final_prices = price_paths[:, -1]
 
+    # Probability within +/- $3 of target
+    tolerance = 3.0
+    prob_near = np.mean(np.abs(final_prices - target_price) <= tolerance) * 100
+    # Probability of being AT OR BELOW target
+    prob_at_or_below = np.mean(final_prices <= target_price) * 100
+    # Probability of being within $5
+    prob_within_5 = np.mean(np.abs(final_prices - target_price) <= 5) * 100
 
-# ══════════════════════════════════════════════════════════════════
-# OPENAI CLIENT
-# ══════════════════════════════════════════════════════════════════
+    # Percentiles
+    p10 = np.percentile(final_prices, 10)
+    p25 = np.percentile(final_prices, 25)
+    p50 = np.percentile(final_prices, 50)
+    p75 = np.percentile(final_prices, 75)
+    p90 = np.percentile(final_prices, 90)
 
-def get_openai_client():
-    if st.session_state["openai_client"] is None:
-        try:
-            api_key = st.secrets.get("openai_api_key", "")
-            if api_key:
-                st.session_state["openai_client"] = openai.OpenAI(api_key=api_key)
-        except Exception:
-            pass
-    return st.session_state["openai_client"]
-
-AI_MODELS = {
-    "o3-mini": {
-        "label": "o3-mini (Recommended)",
-        "description": "Best for regulatory analysis. Strong reasoning for interpreting standards and compliance questions.",
-        "supports_temperature": False,
-    },
-    "gpt-4.1": {
-        "label": "GPT-4.1",
-        "description": "Best for detailed document drafting, audit reports, and structured output.",
-        "supports_temperature": True,
-    },
-    "gpt-4o": {
-        "label": "GPT-4o",
-        "description": "Fast all-rounder for quick regulatory questions and market comparisons.",
-        "supports_temperature": True,
-    },
-    "gpt-4o-mini": {
-        "label": "GPT-4o Mini",
-        "description": "Fastest and cheapest. Good for simple lookups and quick classification checks.",
-        "supports_temperature": True,
-    },
-}
-
-def get_ai_response(messages: List[Dict[str, str]], max_tokens: int = 4000, temperature: float = 0.4) -> str:
-    client = get_openai_client()
-    if not client:
-        return "OpenAI API not configured. Add your openai_api_key to .streamlit/secrets.toml."
-    try:
-        model = st.session_state.get("ai_model", "o3-mini")
-        model_info = AI_MODELS.get(model, {})
-        token_param = "max_completion_tokens" if not model_info.get("supports_temperature", True) else "max_tokens"
-        kwargs = {"model": model, "messages": messages, token_param: max_tokens}
-        if model_info.get("supports_temperature", True):
-            kwargs["temperature"] = temperature
-        response = client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"AI request failed: {e}"
+    return {
+        "prob_within_3": round(prob_near, 1),
+        "prob_at_or_below": round(prob_at_or_below, 1),
+        "prob_within_5": round(prob_within_5, 1),
+        "p10": round(p10, 2),
+        "p25": round(p25, 2),
+        "median": round(p50, 2),
+        "p75": round(p75, 2),
+        "p90": round(p90, 2),
+        "mu_annual": round(mu * 252 * 100, 1),
+        "sigma_annual": round(sigma * np.sqrt(252) * 100, 1),
+        "n_sims": n_sims,
+    }, price_paths, final_prices
 
 
-# ══════════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# CHART HELPERS
+# ---------------------------------------------------------------------------
+CHART_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(10,14,22,0.5)",
+    font=dict(family="Outfit, sans-serif", color="#94a3b8"),
+    margin=dict(l=50, r=20, t=40, b=40),
+    xaxis=dict(gridcolor="rgba(100,116,139,0.08)", showgrid=True),
+    yaxis=dict(gridcolor="rgba(100,116,139,0.08)", showgrid=True),
+    hoverlabel=dict(
+        bgcolor="rgba(10,12,18,0.95)",
+        bordercolor="rgba(34,211,238,0.3)",
+        font=dict(family="JetBrains Mono, monospace", size=12),
+    ),
+)
 
-def profile():
-    return st.session_state["product_profile"]
 
-def gap_statuses():
-    return st.session_state["gap_statuses"]
+def make_intraday_chart(df):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"],
+        mode="lines",
+        line=dict(color="#22d3ee", width=2),
+        fill="tozeroy",
+        fillcolor="rgba(34,211,238,0.08)",
+        name="Brent",
+        hovertemplate="$%{y:.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=320,
+        title=dict(text="Intraday Price (1-min bars)", font=dict(size=16, color="#f1f5f9")),
+        yaxis=dict(title="USD/bbl", tickprefix="$", **CHART_LAYOUT["yaxis"]),
+        xaxis=dict(title="", **CHART_LAYOUT["xaxis"]),
+        showlegend=False,
+    )
+    return fig
 
-def _get_workflow_context():
-    wf_id = st.session_state.get("active_workflow")
-    if not wf_id or wf_id not in WORKFLOWS:
-        return ""
-    wf = WORKFLOWS[wf_id]
-    step = st.session_state.get("workflow_step", 0)
-    step_name = wf["steps"][step] if step < len(wf["steps"]) else ""
-    return f"{wf['title']} - {step_name}"
 
-def _process_chat_message(user_input: str):
-    st.session_state["chat_messages"].append({"role": "user", "content": user_input})
-    ctx = _get_workflow_context()
-    system_prompt = build_system_prompt(profile(), gap_statuses(), workflow_context=ctx)
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in st.session_state["chat_messages"][-10:]:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    response = get_ai_response(messages, max_tokens=4000, temperature=0.4)
-    st.session_state["chat_messages"].append({"role": "assistant", "content": response})
+def make_history_chart(df, period_label, target_price=None, target_date=None):
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
 
-def _ask_ai_button(question: str, key: str):
-    if st.button("Ask AI", key=key, type="secondary"):
-        st.session_state["show_chat"] = True
-        _process_chat_message(question)
+    # Price
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"],
+        mode="lines",
+        line=dict(color="#f97316", width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(249,115,22,0.06)",
+        name="Brent Close",
+        hovertemplate="$%{y:.2f}<extra></extra>",
+    ), row=1, col=1)
+
+    # Target line
+    if target_price:
+        fig.add_hline(y=target_price, line_dash="dash", line_color="rgba(34,211,238,0.5)",
+                      annotation_text=f"Target ${target_price}", annotation_font_color="#22d3ee",
+                      annotation_font_size=11, row=1, col=1)
+
+    # Target date vertical
+    if target_date and target_date > df.index.min():
+        fig.add_vline(x=target_date, line_dash="dot", line_color="rgba(167,139,250,0.4)",
+                      annotation_text="Jun 15", annotation_font_color="#a78bfa",
+                      annotation_font_size=11, row=1, col=1)
+
+    # Volume
+    if "Volume" in df.columns:
+        colors = ["#22c55e" if c >= o else "#ef4444"
+                  for c, o in zip(df["Close"], df["Open"])]
+        fig.add_trace(go.Bar(
+            x=df.index, y=df["Volume"],
+            marker_color=colors, opacity=0.4,
+            name="Volume",
+            hovertemplate="%{y:,.0f}<extra></extra>",
+        ), row=2, col=1)
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=480,
+        title=dict(text=f"Brent Crude - {period_label}", font=dict(size=16, color="#f1f5f9")),
+        showlegend=False,
+    )
+    fig.update_yaxes(title="USD/bbl", tickprefix="$", row=1, col=1,
+                     gridcolor="rgba(100,116,139,0.08)")
+    fig.update_yaxes(title="Vol", row=2, col=1,
+                     gridcolor="rgba(100,116,139,0.08)")
+    fig.update_xaxes(gridcolor="rgba(100,116,139,0.08)")
+    return fig
+
+
+def make_spread_chart(brent_df, wti_df):
+    # Align on dates
+    merged = pd.DataFrame({
+        "Brent": brent_df["Close"],
+        "WTI": wti_df["Close"],
+    }).dropna()
+    merged["Spread"] = merged["Brent"] - merged["WTI"]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=merged.index, y=merged["Spread"],
+        mode="lines",
+        line=dict(color="#a78bfa", width=2),
+        fill="tozeroy",
+        fillcolor="rgba(167,139,250,0.08)",
+        name="Spread",
+        hovertemplate="$%{y:.2f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_color="rgba(100,116,139,0.3)", line_width=1)
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=300,
+        title=dict(text="Brent-WTI Spread", font=dict(size=16, color="#f1f5f9")),
+        yaxis=dict(title="$/bbl", tickprefix="$", **CHART_LAYOUT["yaxis"]),
+        showlegend=False,
+    )
+    return fig
+
+
+def make_supply_demand_chart():
+    """Static supply/demand from IEA/EIA data."""
+    quarters = ["Q3 '25", "Q4 '25", "Q1 '26", "Q2 '26F", "Q3 '26F", "Q4 '26F"]
+    supply = [108.0, 107.2, 106.6, 107.8, 108.5, 109.2]
+    demand = [106.1, 105.8, 105.9, 106.5, 107.1, 107.5]
+    surplus = [s - d for s, d in zip(supply, demand)]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Supply", x=quarters, y=supply,
+                         marker_color="rgba(34,211,238,0.7)", text=[f"{v}" for v in supply],
+                         textposition="outside", textfont=dict(size=10, color="#94a3b8")))
+    fig.add_trace(go.Bar(name="Demand", x=quarters, y=demand,
+                         marker_color="rgba(249,115,22,0.7)", text=[f"{v}" for v in demand],
+                         textposition="outside", textfont=dict(size=10, color="#94a3b8")))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=350,
+        title=dict(text="Global Oil Supply vs Demand (mb/d)", font=dict(size=16, color="#f1f5f9")),
+        barmode="group",
+        yaxis=dict(range=[103, 111], title="mb/d", **CHART_LAYOUT["yaxis"]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(size=11)),
+    )
+    return fig
+
+
+def make_inventory_chart():
+    """Global inventory breakdown from IEA March 2026 OMR."""
+    regions = ["OECD", "China Crude", "Oil on Water", "Other Non-OECD"]
+    values = [4.10, 1.23, 2.05, 0.82]
+    colors = ["#22d3ee", "#f97316", "#a78bfa", "#22c55e"]
+
+    fig = go.Figure(go.Pie(
+        labels=regions, values=values,
+        hole=0.55,
+        marker=dict(colors=colors, line=dict(color="#0c1019", width=2)),
+        textinfo="label+percent",
+        textfont=dict(size=12, color="#e2e8f0"),
+        hovertemplate="%{label}: %{value:.2f}B bbl<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=350,
+        title=dict(text="Global Oil Inventory (8.2B bbl total)", font=dict(size=16, color="#f1f5f9")),
+        annotations=[dict(text="8.2B<br>bbl", x=0.5, y=0.5, font_size=18,
+                          font_color="#f1f5f9", showarrow=False,
+                          font=dict(family="Outfit, sans-serif", weight=700))],
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5,
+                    font=dict(size=11)),
+    )
+    return fig
+
+
+def make_monte_carlo_chart(final_prices, target_price, current_price):
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=final_prices,
+        nbinsx=120,
+        marker_color="rgba(34,211,238,0.4)",
+        marker_line_color="rgba(34,211,238,0.6)",
+        marker_line_width=0.5,
+        name="Simulated Outcomes",
+        hovertemplate="$%{x:.0f}: %{y} sims<extra></extra>",
+    ))
+    fig.add_vline(x=target_price, line_dash="dash", line_color="#22c55e", line_width=2,
+                  annotation_text=f"Target ${target_price}",
+                  annotation_font_color="#22c55e", annotation_font_size=12)
+    fig.add_vline(x=current_price, line_dash="dot", line_color="#f97316", line_width=2,
+                  annotation_text=f"Current ${current_price:.2f}",
+                  annotation_font_color="#f97316", annotation_font_size=12)
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=350,
+        title=dict(text="Monte Carlo Price Distribution (Jun 15 Close)", font=dict(size=16, color="#f1f5f9")),
+        xaxis=dict(title="Price (USD/bbl)", tickprefix="$", **CHART_LAYOUT["xaxis"]),
+        yaxis=dict(title="Frequency", **CHART_LAYOUT["yaxis"]),
+        showlegend=False,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# SIDEBAR
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.markdown("### 🛢️ Dashboard Controls")
+    st.markdown("---")
+
+    chart_range = st.selectbox("Historical Range", ["1 Month", "3 Months", "6 Months", "1 Year", "5 Years"], index=2)
+    show_target = st.checkbox("Show Target Overlay", value=True)
+    show_conflict = st.checkbox("Show Conflict Intel", value=True)
+    show_monte_carlo = st.checkbox("Show Monte Carlo Analysis", value=True)
+
+    st.markdown("---")
+    st.markdown("#### Target Estimate")
+    st.markdown(f"""
+    <div class='target-card'>
+        <div class='metric-label'>CLOSE BY {TARGET_DATE_STR.upper()}</div>
+        <div style='font-size:28px;font-weight:800;color:#22d3ee;'>${TARGET_PRICE:.2f}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("""
+    <div class='dim mono'>
+    Data: Yahoo Finance (BZ=F, CL=F)<br>
+    Refresh: Every 30s<br>
+    Not financial advice
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("🔄 Force Refresh"):
+        st.cache_data.clear()
         st.rerun()
 
 
-# ══════════════════════════════════════════════════════════════════
-# TOP BAR
-# ══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# MAIN DASHBOARD
+# ---------------------------------------------------------------------------
+data = fetch_brent_data()
+info = data["info"]
+intraday = data["intraday"]
+hist_1y = data["hist_1y"]
+hist_5y = data["hist_5y"]
+wti_1y = data["wti_1y"]
 
-st.markdown("""
-<div class="top-bar">
-    <div class="logo">R</div>
-    <span class="title">RegIntel</span>
-    <span class="subtitle">Medical Device Regulatory Intelligence</span>
+# Current price
+if not intraday.empty:
+    current_price = round(float(intraday["Close"].iloc[-1]), 2)
+    prev_close = round(float(info.previous_close), 2) if hasattr(info, "previous_close") else current_price
+    change = round(current_price - prev_close, 2)
+    change_pct = round((change / prev_close) * 100, 2) if prev_close else 0
+    is_up = change >= 0
+else:
+    current_price = prev_close = change = change_pct = 0
+    is_up = True
+
+day_high = round(float(info.day_high), 2) if hasattr(info, "day_high") else 0
+day_low = round(float(info.day_low), 2) if hasattr(info, "day_low") else 0
+year_high = round(float(info.year_high), 2) if hasattr(info, "year_high") else 0
+year_low = round(float(info.year_low), 2) if hasattr(info, "year_low") else 0
+open_price = round(float(info.open), 2) if hasattr(info, "open") else 0
+
+# WTI
+wti_price = round(float(data["wti_intraday"]["Close"].iloc[-1]), 2) if not data["wti_intraday"].empty else 0
+spread = round(current_price - wti_price, 2) if wti_price else 0
+
+# YoY
+yoy = None
+if len(hist_1y) > 5:
+    first_price = float(hist_1y["Close"].iloc[0])
+    if first_price > 0:
+        yoy = round(((current_price - first_price) / first_price) * 100, 1)
+
+# Days to target
+days_to_target = (TARGET_DATE - datetime.now()).days
+
+# ===== HEADER =====
+col_left, col_right = st.columns([3, 2])
+
+with col_left:
+    dot_color = "#22c55e" if is_up else "#ef4444"
+    sign = "+" if is_up else ""
+    change_class = "change-up" if is_up else "change-down"
+    st.markdown(f"""
+    <div>
+        <div style='display:flex;align-items:center;margin-bottom:6px;'>
+            <span class='live-pulse' style='background:{dot_color};box-shadow:0 0 12px {dot_color};'></span>
+            <span class='mono dim' style='letter-spacing:2px;text-transform:uppercase;'>
+                LIVE &middot; Brent Crude Oil Futures (BZ=F)
+            </span>
+        </div>
+        <div style='display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;'>
+            <span class='big-price'>${current_price:.2f}</span>
+            <span class='{change_class}' style='font-size:22px;'>
+                {sign}{change:.2f} ({sign}{change_pct:.2f}%)
+            </span>
+        </div>
+        <div class='mono dim' style='margin-top:6px;'>
+            per barrel &middot; Updated {data["fetch_time"].strftime("%H:%M:%S")} &middot; Prev close ${prev_close:.2f}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_right:
+    st.markdown(f"""
+    <div style='text-align:right;'>
+        <div style='background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:8px 14px;display:inline-block;margin-bottom:6px;'>
+            <span class='mono' style='font-size:12px;font-weight:600;color:#fca5a5;'>
+                52W HIGH ${year_high:.2f} &middot; LOW ${year_low:.2f}
+            </span>
+        </div><br>
+        <div style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);border-radius:8px;padding:8px 14px;display:inline-block;margin-bottom:6px;'>
+            <span class='mono' style='font-size:12px;font-weight:600;color:#c4b5fd;'>
+                Brent-WTI Spread: ${spread:.2f}
+            </span>
+        </div><br>
+        <div style='background:rgba(34,211,238,0.1);border:1px solid rgba(34,211,238,0.25);border-radius:8px;padding:8px 14px;display:inline-block;'>
+            <span class='mono' style='font-size:12px;font-weight:600;color:#67e8f9;'>
+                Target: ${TARGET_PRICE} by {TARGET_DATE_STR} &middot; {days_to_target}d out
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ===== STATS ROW =====
+st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+stats = [
+    (c1, "Day Range", f"${day_low:.2f} - ${day_high:.2f}", "#22d3ee"),
+    (c2, "Open", f"${open_price:.2f}", "#22c55e"),
+    (c3, "WTI Price", f"${wti_price:.2f}", "#a78bfa"),
+    (c4, "YoY Change", f"{'+' if yoy and yoy >= 0 else ''}{yoy:.1f}%" if yoy else "N/A", "#f97316"),
+    (c5, "Spread", f"${spread:.2f}", "#a78bfa"),
+    (c6, "Days to Target", f"{days_to_target}", "#22d3ee"),
+]
+
+for col, label, value, color in stats:
+    with col:
+        st.markdown(f"""
+        <div class='metric-card' style='border-left:3px solid {color};'>
+            <div class='metric-label'>{label}</div>
+            <div class='metric-value'>{value}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ===== INTRADAY CHART =====
+st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+if not intraday.empty:
+    st.plotly_chart(make_intraday_chart(intraday), use_container_width=True)
+
+# ===== HISTORICAL CHART =====
+range_map = {
+    "1 Month": ("1mo", "1 Month"),
+    "3 Months": ("3mo", "3 Months"),
+    "6 Months": ("6mo", "6 Months"),
+    "1 Year": ("1y", "1 Year"),
+    "5 Years": ("5y", "5 Years"),
+}
+rkey, rlabel = range_map[chart_range]
+
+if rkey == "5y":
+    chart_df = hist_5y
+elif rkey == "1y":
+    chart_df = hist_1y
+else:
+    days_map = {"1mo": 22, "3mo": 66, "6mo": 132}
+    chart_df = hist_1y.tail(days_map.get(rkey, 132))
+
+target_overlay = TARGET_PRICE if show_target else None
+target_date_overlay = TARGET_DATE if show_target else None
+st.plotly_chart(make_history_chart(chart_df, rlabel, target_overlay, target_date_overlay), use_container_width=True)
+
+# ===== SPREAD + SUPPLY/DEMAND =====
+col_sp, col_sd = st.columns(2)
+with col_sp:
+    st.plotly_chart(make_spread_chart(hist_1y, wti_1y), use_container_width=True)
+with col_sd:
+    st.plotly_chart(make_supply_demand_chart(), use_container_width=True)
+
+# ===== INVENTORY =====
+col_inv, col_analysts = st.columns(2)
+with col_inv:
+    st.plotly_chart(make_inventory_chart(), use_container_width=True)
+
+with col_analysts:
+    st.markdown("""
+    <div class='metric-card' style='border-left:3px solid #fbbf24;'>
+        <div style='font-size:16px;font-weight:700;color:#f1f5f9;margin-bottom:12px;'>Analyst Forecasts (Brent, 2026)</div>
+
+        <div class='analyst-row'>
+            <span style='color:#94a3b8;'>EIA STEO (Mar 10)</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>>$95 thru May, <$80 Q3, ~$70 Q4</span>
+        </div>
+        <div class='analyst-row'>
+            <span style='color:#94a3b8;'>Goldman Sachs</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>$71/bbl Q4 (base), $111 Q4 (worst)</span>
+        </div>
+        <div class='analyst-row'>
+            <span style='color:#94a3b8;'>Standard Chartered</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>$98 Q2, $85 Q3, $80.50 Q4</span>
+        </div>
+        <div class='analyst-row'>
+            <span style='color:#94a3b8;'>Fitch Ratings</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>$70 avg (Hormuz closed ~1mo)</span>
+        </div>
+        <div class='analyst-row'>
+            <span style='color:#94a3b8;'>J.P. Morgan</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>$60 avg (pre-conflict, bearish)</span>
+        </div>
+        <div class='analyst-row' style='border-bottom:none;'>
+            <span style='color:#94a3b8;'>Long Forecast (AI)</span>
+            <span class='mono' style='color:#fbbf24;font-weight:600;'>$132 high Jun, $118.75 year-end</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ===== TARGET ESTIMATE ANALYSIS =====
+st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+st.markdown("---")
+st.markdown("## 🎯 Target Estimate Analysis: $94.50 by June 15 Close")
+
+# Monte Carlo
+mc_results, price_paths, final_prices = compute_target_probability(
+    hist_1y, current_price, TARGET_PRICE, days_to_target
+)
+
+if mc_results and show_monte_carlo:
+    col_mc1, col_mc2 = st.columns([2, 1])
+
+    with col_mc1:
+        st.plotly_chart(make_monte_carlo_chart(final_prices, TARGET_PRICE, current_price), use_container_width=True)
+
+    with col_mc2:
+        st.markdown(f"""
+        <div class='target-card'>
+            <div class='metric-label'>MONTE CARLO RESULTS ({mc_results['n_sims']:,} SIMULATIONS)</div>
+            <div style='margin-top:12px;'>
+                <div class='analyst-row'>
+                    <span style='color:#94a3b8;'>P(within +/-$3 of $94.50)</span>
+                    <span class='mono cyan' style='font-weight:700;font-size:16px;'>{mc_results['prob_within_3']}%</span>
+                </div>
+                <div class='analyst-row'>
+                    <span style='color:#94a3b8;'>P(within +/-$5 of $94.50)</span>
+                    <span class='mono cyan' style='font-weight:700;font-size:16px;'>{mc_results['prob_within_5']}%</span>
+                </div>
+                <div class='analyst-row'>
+                    <span style='color:#94a3b8;'>P(at or below $94.50)</span>
+                    <span class='mono green' style='font-weight:700;font-size:16px;'>{mc_results['prob_at_or_below']}%</span>
+                </div>
+                <div style='margin-top:14px;border-top:1px solid rgba(100,116,139,0.15);padding-top:12px;'>
+                    <div class='metric-label'>PRICE DISTRIBUTION (JUN 15)</div>
+                    <div class='analyst-row'><span style='color:#64748b;'>10th %ile</span><span class='mono' style='color:#ef4444;'>${mc_results['p10']}</span></div>
+                    <div class='analyst-row'><span style='color:#64748b;'>25th %ile</span><span class='mono orange'>${mc_results['p25']}</span></div>
+                    <div class='analyst-row'><span style='color:#64748b;'>Median</span><span class='mono' style='color:#f1f5f9;font-weight:700;'>${mc_results['median']}</span></div>
+                    <div class='analyst-row'><span style='color:#64748b;'>75th %ile</span><span class='mono orange'>${mc_results['p75']}</span></div>
+                    <div class='analyst-row' style='border-bottom:none;'><span style='color:#64748b;'>90th %ile</span><span class='mono red'>${mc_results['p90']}</span></div>
+                </div>
+                <div style='margin-top:12px;font-size:11px;color:#475569;'>
+                    Vol: {mc_results['sigma_annual']}% annualized &middot; Drift: {mc_results['mu_annual']}%/yr
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# Qualitative Assessment
+st.markdown(f"""
+<div class='target-card' style='margin-top:16px;'>
+    <div style='font-size:18px;font-weight:700;color:#22d3ee;margin-bottom:14px;'>
+        Qualitative Assessment: Is $94.50 by June 15 Realistic?
+    </div>
+    <div style='font-size:14px;color:#cbd5e1;line-height:1.8;'>
+        <p><strong style='color:#22c55e;'>FACTORS SUPPORTING YOUR TARGET:</strong></p>
+        <p>
+        Your $94.50 target sits right in the consensus corridor. The EIA's March 10 STEO forecasts Brent
+        staying above $95/bbl through approximately May, then dropping below $80 in Q3. That puts mid-June
+        squarely in the transition zone where $94.50 is plausible. Standard Chartered's revised forecast
+        has Q2 averaging $98 and Q3 averaging $85, making $94.50 a reasonable mid-June interpolation point.
+        Goldman Sachs' base case assumes a 21-day low-flow period at Hormuz followed by 30 days of gradual
+        recovery, which would imply normalization roughly by late April/May, with prices trending down from
+        the current spike toward the $70s by Q4. A June print in the low-to-mid $90s falls on that glide path.
+        </p>
+
+        <p><strong style='color:#ef4444;'>FACTORS WORKING AGAINST IT:</strong></p>
+        <p>
+        The biggest risk is Hormuz staying closed longer than analysts assume. Iran's new Supreme Leader Mojtaba
+        Khamenei has vowed to keep the Strait blocked. As of today, only 21 tankers have transited since Feb 28
+        vs. 100+ per day normally. If the blockade persists into May, the conflict premium stays elevated and $94.50
+        becomes too low. The Long Forecast algorithmic model projects a $132 high in June, reflecting a scenario
+        where disruption deepens. Additionally, the IEA notes 3+ mb/d of Gulf refining capacity is already shut
+        and LPG/naphtha supply losses are cascading through petrochemicals. If this becomes a sustained supply
+        destruction event, prices stay triple-digit through summer.
+        </p>
+
+        <p><strong style='color:#fbbf24;'>NET ASSESSMENT:</strong></p>
+        <p>
+        Your target of $94.50 by June 15 is a <strong>moderate-probability outcome</strong>. It requires the
+        Strait of Hormuz to begin meaningfully reopening by late April/early May, the IEA emergency 400M barrel
+        release to dampen the spike, and OPEC+ to follow through on the 206K b/d April increase. If those three
+        conditions are met, the conflict premium bleeds off and the underlying surplus (1.9M b/d forecast for 2026)
+        reasserts itself, pulling Brent into the $90-95 corridor by mid-June. If any of those conditions fail,
+        particularly Hormuz, expect $100-115+. The Monte Carlo above gives you the statistical distribution
+        based on historical volatility.
+        </p>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════
-# SIDEBAR
-# ══════════════════════════════════════════════════════════════════
+# ===== CONFLICT INTEL =====
+if show_conflict:
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("## ⚠️ Strait of Hormuz / Iran Conflict Intel")
 
-with st.sidebar:
-    if st.button("Home", key="nav_home", width="stretch",
-                 type="primary" if st.session_state["active_workflow"] is None else "secondary"):
-        navigate_home()
-
-    wf_id = st.session_state.get("active_workflow")
-    if wf_id and wf_id in WORKFLOWS:
-        wf = WORKFLOWS[wf_id]
-        st.markdown(f"**{wf['title']}**")
-        current_step = st.session_state.get("workflow_step", 0)
-        for i, step_name in enumerate(wf["steps"]):
-            prefix = ">> " if i == current_step else ("   " if i > current_step else "   ")
-            btn_type = "primary" if i == current_step else "secondary"
-            if st.button(f"{prefix}{step_name}", key=f"wf_step_{i}", width="stretch",
-                         type=btn_type, disabled=(i > current_step)):
-                go_to_step(i)
-
-    st.divider()
-
-    if st.button("AI Advisor Chat", key="toggle_chat", width="stretch"):
-        st.session_state["show_chat"] = not st.session_state.get("show_chat", False)
-        st.rerun()
-
-    with st.expander("AI Model", expanded=False):
-        model_keys = list(AI_MODELS.keys())
-        current_idx = model_keys.index(st.session_state.get("ai_model", "o3-mini"))
-        selected = st.radio("Model", model_keys, index=current_idx,
-                           format_func=lambda k: AI_MODELS[k]["label"], key="model_sel", label_visibility="collapsed")
-        st.caption(AI_MODELS[selected]["description"])
-        if selected != st.session_state.get("ai_model"):
-            st.session_state["ai_model"] = selected
-
-    st.divider()
-    st.caption("ISO 13485 | FDA 21 CFR 820")
-    st.caption("EU MDR | ANVISA | COFEPRIS")
-
-
-# ══════════════════════════════════════════════════════════════════
-# CHAT SIDEBAR RENDERER
-# ══════════════════════════════════════════════════════════════════
-
-def render_chat_panel():
-    st.markdown("### AI Regulatory Advisor")
-    p = profile()
-    if p["name"]:
-        st.caption(f"Context: **{p['name']}**")
-
-    for msg in st.session_state["chat_messages"][-20:]:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if not st.session_state["chat_messages"]:
-        st.info("Ask anything about medical device regulations, testing, submissions, standards, or compliance.")
-
-    if user_input := st.chat_input("Ask about regulations, testing, standards...", key="chat_input"):
-        _process_chat_message(user_input)
-        st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════
-# LANDING PAGE
-# ══════════════════════════════════════════════════════════════════
-
-def render_landing_page():
     st.markdown("""
-    <div class="hero">
-        <h2>What are you trying to do?</h2>
-        <p>Pick a starting point below. Every path gives you clear, prioritized requirements --
-        what's legally required, what's recommended, and what you can skip.</p>
+    <div class='conflict-card'>
+        <div style='font-size:18px;font-weight:700;color:#fca5a5;margin-bottom:14px;'>
+            Active Conflict Summary (as of March 20, 2026)
+        </div>
+        <div style='font-size:14px;color:#cbd5e1;line-height:1.8;'>
+
+        <p><strong style='color:#f97316;'>TIMELINE OF EVENTS:</strong></p>
+        <ul style='margin-left:18px;'>
+            <li><strong>Feb 28:</strong> US launched Operation Epic Fury. Joint US-Israeli air and maritime strikes on Iran, killing
+            Supreme Leader Ali Khamenei. Targets included IRGC HQ, ballistic missile sites, naval assets, air defense, and military airfields.
+            CENTCOM reported 17+ Iranian ships destroyed. "Not a single Iranian ship underway" in the Gulf.</li>
+            <li><strong>Mar 1-2:</strong> Iran retaliates with missile and drone strikes on US bases, Israeli territory, and Gulf states (UAE, Saudi Arabia).
+            IRGC declares Strait of Hormuz "closed." Brent opens ~$85-90 from Friday's $73.</li>
+            <li><strong>Mar 4:</strong> Iran formally announces Strait closure, begins attacking transiting vessels. Tanker traffic drops ~70% immediately.
+            150+ ships anchor outside the strait.</li>
+            <li><strong>Mar 5:</strong> IRGC clarifies closure applies only to US, Israel, and Western-allied ships. China-flagged vessels begin testing transit.</li>
+            <li><strong>Mar 8:</strong> Brent surpasses $100/bbl for first time since 2022. Rises to $126 peak.</li>
+            <li><strong>Mar 11:</strong> IEA member countries agree to release 400M barrels from emergency reserves (largest since 2022 Ukraine release). US commits 172M barrels from SPR.</li>
+            <li><strong>Mar 12-13:</strong> 21 confirmed Iranian attacks on merchant vessels. 7 seafarers killed (IMO). A China-owned vessel hit despite broadcasting "China Owner" via AIS.</li>
+            <li><strong>Mar 14:</strong> Iran strikes UAE Shah gas field (drone), Fujairah Oil Industry Zone fire, another tanker hit. 3+ mb/d of Gulf refining shut.</li>
+            <li><strong>Mar 16:</strong> Pakistan tanker crosses Hormuz with Iranian permission. First confirmed non-Iranian cargo vessel since closure. Dubai airport fire from drone-related fuel tank hit. UAE briefly closes airspace.</li>
+            <li><strong>Mar 17:</strong> New Supreme Leader Mojtaba Khamenei vows to maintain Strait blockade. QatarEnergy declares force majeure after Ras Laffan LNG facility strikes. Says repairs could take up to 5 years.</li>
+            <li><strong>Mar 18:</strong> Turkish ship permitted to transit. Indian gas carriers and Saudi oil tanker (1M bbl for India) allowed through.
+            Iran drone strikes on Oman's Duqm and Salalah ports (Hormuz bypass routes). Fuel storage damaged at Duqm.</li>
+            <li><strong>Mar 19:</strong> Brent spikes to $119/bbl intraday after Israeli strike on Iran's South Pars gas field and Iranian
+            retaliation against Qatar's Ras Laffan (world's largest LNG facility). Settles at $108.65.</li>
+            <li><strong>Mar 20 (Today):</strong> Brent at ~$107-110. Only 21 tankers have transited the strait since Feb 28 (vs 100+/day normally).
+            ~400 vessels waiting in Gulf of Oman. US considers intercepting Iranian crude tankers and deploying additional carrier strike group.</li>
+        </ul>
+
+        <p><strong style='color:#f97316;'>KEY MARKET IMPACTS:</strong></p>
+        <ul style='margin-left:18px;'>
+            <li><strong>~20% of global seaborne oil (20M b/d)</strong> normally flows through Hormuz. Effectively halted for most operators.</li>
+            <li><strong>Iran still exporting to China:</strong> 11.7M barrels shipped since Feb 28, all to China. But rate (1.22 mb/d) is down from 2.16 mb/d pre-war.</li>
+            <li><strong>Gulf production cuts:</strong> Saudi Arabia reducing output as onshore storage fills. Iraq's Kurdish fields halted as precaution.</li>
+            <li><strong>Bypass routes degraded:</strong> UAE's Fujairah (key export hub outside Hormuz) under repeated attack. Oman's Duqm damaged. Sohar in insurer war-risk zone.</li>
+            <li><strong>LNG crisis:</strong> European gas surged from ~30 to 60+ EUR/MWh. QatarEnergy's 17% capacity loss could take years to restore.</li>
+            <li><strong>Insurance:</strong> War-risk premiums jumped from 0.125% to 0.2-0.4% of hull value. Most commercial insurers have withdrawn from the corridor.</li>
+            <li><strong>Fed impact:</strong> Rate cut expectations collapsed. 73% probability of no cuts in 2026 (was 74% chance of 2+ cuts one month ago).</li>
+        </ul>
+
+        <p><strong style='color:#f97316;'>WHAT TO WATCH:</strong></p>
+        <ul style='margin-left:18px;'>
+            <li><strong>Hormuz reopening signals:</strong> Frequency of permitted transits, insurance market moves, CENTCOM de-mining operations.</li>
+            <li><strong>OPEC+ April 5 meeting:</strong> Will they accelerate output increases beyond 206K b/d?</li>
+            <li><strong>US Kharg Island strikes:</strong> Friday overnight attacks targeted Iran's main oil export hub. If successful, Iran's leverage diminishes.</li>
+            <li><strong>IEA April 7 STEO update:</strong> Will reflect actual March disruption data.</li>
+            <li><strong>Ceasefire/negotiation track:</strong> Countries are striking bilateral deals with Iran for transit (Pakistan, Turkey, India). If this de facto "permission-based" transit becomes the norm, gradual normalization begins.</li>
+        </ul>
+
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    row1 = st.columns(3)
-    row2 = st.columns(3)
-    all_cols = row1 + row2
-    for i, (wf_id, wf) in enumerate(WORKFLOWS.items()):
-        with all_cols[i]:
-            with st.container(border=True):
-                st.markdown(f"**{wf['title']}**")
-                st.caption(wf['subtitle'])
-                st.caption(f"For: {wf['persona']}")
-                if st.button("Start", key=f"start_{wf_id}", width="stretch"):
-                    navigate_to(wf_id, step=0)
 
-    # Status summary at bottom
-    st.markdown("---")
-    p = profile()
-    gs = get_gap_stats(gap_statuses())
-    applicable = get_applicable_standards(p["target_markets"])
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Product Profile", "Set" if p["name"] else "Not Set")
-    with c2:
-        st.metric("Target Markets", len(p["target_markets"]) if p["target_markets"] else 0)
-    with c3:
-        st.metric("Applicable Standards", len(applicable))
-    with c4:
-        st.metric("Gap Analysis", f"{gs['compliant']}/{gs['total']}")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SHARED: PROFILE FORM WIDGETS
-# ══════════════════════════════════════════════════════════════════
-
-def _render_device_basics(p, key_suffix=""):
-    c1, c2 = st.columns(2)
-    with c1:
-        p["name"] = st.text_input("Device Name", value=p["name"], placeholder="e.g., SleepWell CPAP Mask", key=f"dev_name{key_suffix}")
-    with c2:
-        p["predicate_device"] = st.text_input("Predicate Device (if known)", value=p["predicate_device"], placeholder="e.g., K123456", key=f"pred{key_suffix}")
-    p["description"] = st.text_area("Describe your device", value=p["description"], placeholder="What is it? What does it do? What is it made of?", height=80, key=f"desc{key_suffix}")
-    p["intended_use"] = st.text_area("Intended Use", value=p["intended_use"], placeholder="The device is intended for...", height=60, key=f"iu{key_suffix}")
-
-def _render_classification(p, key_suffix=""):
-    c1, c2 = st.columns(2)
-    with c1:
-        us_options = ["", "Class I", "Class I (510(k) required)", "Class II", "Class II (De Novo)"]
-        us_labels = ["Select...", "Class I - Low Risk", "Class I - 510(k) Required", "Class II - 510(k)", "Class II - De Novo"]
-        idx = us_options.index(p["class_us"]) if p["class_us"] in us_options else 0
-        p["class_us"] = st.selectbox("US FDA Classification", us_options, index=idx,
-                                      format_func=lambda x: us_labels[us_options.index(x)], key=f"us_cls{key_suffix}")
-    with c2:
-        eu_options = ["", "Class I", "Class I (sterile)", "Class I (measuring)", "Class I (reusable surgical)", "Class IIa", "Class IIb"]
-        eu_labels = ["Select...", "Class I", "Class I - Sterile", "Class I - Measuring", "Class I - Reusable Surgical", "Class IIa", "Class IIb"]
-        idx = eu_options.index(p["class_eu"]) if p["class_eu"] in eu_options else 0
-        p["class_eu"] = st.selectbox("EU MDR Classification (if targeting EU)", eu_options, index=idx,
-                                      format_func=lambda x: eu_labels[eu_options.index(x)], key=f"eu_cls{key_suffix}")
-
-def _render_characteristics(p, key_suffix=""):
-    c1, c2 = st.columns(2)
-    with c1:
-        contact_options = ["", "none", "intact-skin", "mucosal-membrane", "breached-skin", "blood-path-indirect", "blood-contact", "tissue-bone", "implant"]
-        contact_labels = ["Select...", "No patient contact", "Intact skin", "Mucosal membrane", "Breached skin", "Blood path - indirect", "Blood contacting", "Tissue/bone", "Implant"]
-        idx = contact_options.index(p["contact_type"]) if p["contact_type"] in contact_options else 0
-        p["contact_type"] = st.selectbox("Patient Contact Type", contact_options, index=idx,
-                                          format_func=lambda x: contact_labels[contact_options.index(x)], key=f"ct{key_suffix}")
-    with c2:
-        dur_options = ["", "limited", "prolonged", "permanent"]
-        dur_labels = ["Select...", "Limited (< 24 hours)", "Prolonged (24h - 30 days)", "Permanent (> 30 days)"]
-        idx = dur_options.index(p["contact_duration"]) if p["contact_duration"] in dur_options else 0
-        p["contact_duration"] = st.selectbox("Contact Duration", dur_options, index=idx,
-                                              format_func=lambda x: dur_labels[dur_options.index(x)], key=f"cd{key_suffix}")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        p["sterile"] = st.toggle("Sterile", value=p["sterile"], key=f"ster{key_suffix}")
-    with c2:
-        p["has_software"] = st.toggle("Has Software", value=p["has_software"], key=f"sw{key_suffix}")
-    with c3:
-        p["is_electrical"] = st.toggle("Electrical", value=p["is_electrical"], key=f"elec{key_suffix}")
-
-    if p["sterile"]:
-        ster_options = ["", "EO", "gamma", "e-beam", "steam", "dry-heat", "other"]
-        ster_labels = ["Select...", "Ethylene Oxide (EO)", "Gamma Radiation", "Electron Beam", "Steam", "Dry Heat", "Other"]
-        idx = ster_options.index(p["sterilization_method"]) if p["sterilization_method"] in ster_options else 0
-        p["sterilization_method"] = st.selectbox("Sterilization Method", ster_options, index=idx,
-                                                  format_func=lambda x: ster_labels[ster_options.index(x)], key=f"sm{key_suffix}")
-    if p["has_software"]:
-        sw_options = ["", "A", "B", "C"]
-        sw_labels = ["Select...", "Class A - No harm", "Class B - Non-serious injury", "Class C - Death/serious injury"]
-        idx = sw_options.index(p["software_safety_class"]) if p["software_safety_class"] in sw_options else 0
-        p["software_safety_class"] = st.selectbox("Software Safety Class (IEC 62304)", sw_options, index=idx,
-                                                   format_func=lambda x: sw_labels[sw_options.index(x)], key=f"ssc{key_suffix}")
-
-def _render_market_selection(p, key_suffix=""):
-    st.caption("Select your target markets (US is selected by default):")
-    # Auto-select US if nothing selected
-    if not p["target_markets"]:
-        p["target_markets"] = ["US"]
-    cols = st.columns(len(MARKETS))
-    for i, (code, market) in enumerate(MARKETS.items()):
-        with cols[i]:
-            active = code in p["target_markets"]
-            if st.checkbox(f"{market['flag']} {market['name']}", value=active, key=f"mkt_{code}{key_suffix}"):
-                if code not in p["target_markets"]:
-                    p["target_markets"].append(code)
-            else:
-                if code in p["target_markets"]:
-                    p["target_markets"].remove(code)
-
-def _render_tiered_requirements(reqs, show_not_needed=True):
-    """Render requirements grouped by tier with visual styling."""
-    for tier_key in ["BARE_MINIMUM", "HIGHLY_SUGGESTED", "NICE_TO_HAVE", "NOT_NEEDED"]:
-        tier_reqs = [r for r in reqs if r["tier"] == tier_key]
-        if not tier_reqs:
-            continue
-        if tier_key == "NOT_NEEDED" and not show_not_needed:
-            continue
-
-        tier_info = REQUIREMENT_TIERS[tier_key]
-        expanded = tier_key in ("BARE_MINIMUM", "HIGHLY_SUGGESTED")
-
-        with st.expander(f"**{tier_info['label']}** ({len(tier_reqs)} items) -- {tier_info['description']}", expanded=expanded):
-            for r in tier_reqs:
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 1, 1])
-                    with c1:
-                        st.markdown(f"**{r['name']}**")
-                        st.caption(f"{r['reference']} -- {r['detail']}")
-                    with c2:
-                        st.caption(f"Timeline: {r['timeline']}")
-                    with c3:
-                        st.caption(f"Cost: {r['cost']}")
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 1: BRING A PRODUCT TO MARKET
-# ══════════════════════════════════════════════════════════════════
-
-def render_market_entry(step):
-    p = profile()
-
-    if step == 0:
-        st.header("Step 1: Describe Your Device")
-        st.caption("Tell us about your device. We'll figure out what you need.")
-
-        with st.container(border=True):
-            _render_device_basics(p, key_suffix="_me")
-
-        with st.container(border=True):
-            st.subheader("Target Markets")
-            _render_market_selection(p, key_suffix="_me")
-
-        st.session_state["product_profile"] = p
-        if st.button("Next: Classification", key="me_next_0", type="primary"):
-            advance_step()
-
-    elif step == 1:
-        st.header("Step 2: Classification & Device Details")
-        st.caption("Help us understand the device characteristics so we can determine exact requirements.")
-
-        with st.container(border=True):
-            st.subheader("FDA / EU Classification")
-            _render_classification(p, key_suffix="_me")
-            _ask_ai_button(f"Help me determine the FDA classification for: {p['description'] or p['name'] or 'my medical device'}", "me_ai_class")
-
-        with st.container(border=True):
-            st.subheader("Device Characteristics")
-            _render_characteristics(p, key_suffix="_me")
-
-        st.session_state["product_profile"] = p
-        if st.button("Next: Show My Requirements", key="me_next_1", type="primary"):
-            advance_step()
-
-    elif step == 2:
-        st.header("Step 3: Your Requirements")
-        if p["name"]:
-            st.caption(f"Requirements for **{p['name']}** -- organized by priority")
-        else:
-            st.caption("Requirements organized by priority based on your device profile")
-
-        reqs = get_tiered_requirements(p)
-        bare = [r for r in reqs if r["tier"] == "BARE_MINIMUM"]
-        suggested = [r for r in reqs if r["tier"] == "HIGHLY_SUGGESTED"]
-        nice = [r for r in reqs if r["tier"] == "NICE_TO_HAVE"]
-        not_needed = [r for r in reqs if r["tier"] == "NOT_NEEDED"]
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Bare Minimum", len(bare))
-        c2.metric("Highly Suggested", len(suggested))
-        c3.metric("Nice to Have", len(nice))
-        c4.metric("Not Needed", len(not_needed))
-
-        _render_tiered_requirements(reqs)
-
-        if st.button("Next: Timeline & Costs", key="me_next_2", type="primary"):
-            advance_step()
-
-    elif step == 3:
-        st.header("Step 4: Timeline & Costs")
-        st.caption("Estimated timeline and costs for your requirements")
-
-        reqs = get_tiered_requirements(p)
-        bare = [r for r in reqs if r["tier"] == "BARE_MINIMUM"]
-        suggested = [r for r in reqs if r["tier"] == "HIGHLY_SUGGESTED"]
-
-        # Market pathways
-        markets = p["target_markets"] if p["target_markets"] else ["US"]
-        with st.container(border=True):
-            st.subheader("Submission Pathways by Market")
-            rows = []
-            for mkt in markets:
-                info = get_classification_info(mkt, p)
-                if not info:
-                    continue
-                if mkt == "EU":
-                    class_key = p.get("class_eu") or "Class IIa"
-                else:
-                    raw = p.get("class_us", "")
-                    class_key = "Class II" if "Class II" in raw else ("Class I" if "Class I" in raw else "Class II")
-                rows.append({
-                    "Market": f"{MARKETS[mkt]['flag']} {MARKETS[mkt]['agency']}",
-                    "Class": class_key,
-                    "Pathway": info["pathway"],
-                    "Timeline": info["timeline"],
-                    "Fees": info.get("fees", ""),
-                })
-            if rows:
-                st.dataframe(pd.DataFrame(rows), hide_index=True)
-
-        # Cost summary
-        with st.container(border=True):
-            st.subheader("Requirements Summary")
-            summary_rows = []
-            for r in bare + suggested:
-                summary_rows.append({
-                    "Requirement": r["name"],
-                    "Priority": REQUIREMENT_TIERS[r["tier"]]["label"],
-                    "Timeline": r["timeline"],
-                    "Est. Cost": r["cost"],
-                    "Reference": r["reference"],
-                })
-            if summary_rows:
-                st.dataframe(pd.DataFrame(summary_rows), hide_index=True)
-
-        _ask_ai_button(f"Give me a project plan and critical path for bringing {p['name'] or 'my device'} to market in {', '.join(markets)}. Device: {p['description']}", "me_ai_plan")
-
-        if st.button("Start Over", key="me_restart"):
-            navigate_home()
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 2: 510(k) & PREDICATE
-# ══════════════════════════════════════════════════════════════════
-
-def render_fiveten_k(step):
-    p = profile()
-
-    if step == 0:
-        st.header("Step 1: Your Device")
-        st.caption("Describe your device so we can help find predicates and prep your 510(k).")
-
-        with st.container(border=True):
-            _render_device_basics(p, key_suffix="_5k")
-        with st.container(border=True):
-            st.subheader("Classification")
-            _render_classification(p, key_suffix="_5k")
-
-        st.session_state["product_profile"] = p
-        if st.button("Next: Find Predicates", key="5k_next_0", type="primary"):
-            advance_step()
-
-    elif step == 1:
-        st.header("Step 2: Predicate Search")
-        guidance = FIVETEN_K_GUIDANCE["predicate_search"]
-        st.caption("How to find a predicate device for your 510(k)")
-
-        with st.container(border=True):
-            st.subheader(guidance["title"])
-            for i, s in enumerate(guidance["steps"], 1):
-                st.markdown(f"**{i}.** {s}")
-
-        st.info("Use the AI Advisor to help identify potential predicate devices based on your device description.")
-        _ask_ai_button(f"Help me find FDA 510(k) predicate devices for: {p['name']}. Description: {p['description']}. Intended use: {p['intended_use']}", "5k_ai_pred")
-
-        if st.button("Next: SE Comparison", key="5k_next_1", type="primary"):
-            advance_step()
-
-    elif step == 2:
-        st.header("Step 3: Substantial Equivalence Comparison")
-        se = FIVETEN_K_GUIDANCE["substantial_equivalence"]
-        st.caption("Compare your device to the predicate across these areas:")
-
-        for area_info in se["comparison_areas"]:
-            with st.container(border=True):
-                c1, c2 = st.columns([2, 3])
-                with c1:
-                    required_badge = " :red[**Required**]" if area_info["required"] else " (if applicable)"
-                    st.markdown(f"**{area_info['area']}**{required_badge}")
-                    st.caption(area_info["description"])
-                with c2:
-                    area_key = area_info["area"].replace(" ", "_").replace("/", "_")
-                    notes = st.session_state["se_notes"].get(area_key, "")
-                    new_notes = st.text_area("Your comparison notes", value=notes, key=f"se_{area_key}", height=60, label_visibility="collapsed", placeholder="Same as predicate / Different because...")
-                    st.session_state["se_notes"][area_key] = new_notes
-
-        _ask_ai_button(f"Help me write a substantial equivalence argument for my device: {p['name']}. Description: {p['description']}. Predicate: {p['predicate_device']}", "5k_ai_se")
-
-        if st.button("Next: Submission Checklist", key="5k_next_2", type="primary"):
-            advance_step()
-
-    elif step == 3:
-        st.header("Step 4: 510(k) Submission Checklist")
-        st.caption("Everything you need in your 510(k) submission package")
-
-        sections = FIVETEN_K_GUIDANCE["submission_sections"]
-        for sec in sections:
-            tier = sec["tier"]
-            if tier == "conditional":
-                cond = sec.get("condition", "")
-                if cond == "patient-contact" and (not p.get("contact_type") or p["contact_type"] == "none"):
-                    tier = "NOT_NEEDED"
-                elif cond == "sterile" and not p.get("sterile"):
-                    tier = "NOT_NEEDED"
-                elif cond == "software" and not p.get("has_software"):
-                    tier = "NOT_NEEDED"
-                elif cond == "electrical" and not p.get("is_electrical"):
-                    tier = "NOT_NEEDED"
-                else:
-                    tier = "BARE_MINIMUM"
-
-            tier_info = REQUIREMENT_TIERS.get(tier, REQUIREMENT_TIERS["BARE_MINIMUM"])
-            color = tier_info["color"]
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                with c1:
-                    st.markdown(f"**{sec['name']}**")
-                    st.caption(sec["detail"])
-                with c2:
-                    st.markdown(f'<span style="background:{color}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700;">{tier_info["label"]}</span>', unsafe_allow_html=True)
-
-        _ask_ai_button(f"Review my 510(k) submission plan for {p['name']}. What am I likely missing?", "5k_ai_review")
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 3: WHAT TESTING DO I NEED?
-# ══════════════════════════════════════════════════════════════════
-
-def render_testing(step):
-    p = profile()
-
-    if step == 0:
-        st.header("Quick Device Profile")
-        st.caption("Answer a few questions and we'll tell you exactly what testing you need.")
-
-        with st.container(border=True):
-            p["name"] = st.text_input("Device name (optional)", value=p["name"], key="test_name")
-            _render_characteristics(p, key_suffix="_test")
-
-        with st.container(border=True):
-            st.subheader("Classification")
-            us_options = ["", "Class I", "Class I (510(k) required)", "Class II", "Class II (De Novo)"]
-            us_labels = ["Select...", "Class I - Low Risk", "Class I - 510(k) Required", "Class II - 510(k)", "Class II - De Novo"]
-            idx = us_options.index(p["class_us"]) if p["class_us"] in us_options else 0
-            p["class_us"] = st.selectbox("US FDA Classification", us_options, index=idx,
-                                          format_func=lambda x: us_labels[us_options.index(x)], key="test_us_cls")
-
-        if not p["target_markets"]:
-            p["target_markets"] = ["US"]
-        st.session_state["product_profile"] = p
-
-        if st.button("Show My Testing Requirements", key="test_go", type="primary"):
-            advance_step()
-
-    elif step == 1:
-        st.header("Your Testing Requirements")
-        if p["name"]:
-            st.caption(f"Testing requirements for **{p['name']}**")
-
-        reqs = get_tiered_requirements(p)
-        test_reqs = [r for r in reqs if r["category"] in ("Testing", "Biocompatibility", "Sterilization", "Software")]
-        if not test_reqs:
-            test_reqs = [r for r in reqs if r["category"] != "Regulatory" and r["category"] != "QMS" and r["category"] != "Labeling" and r["category"] != "Post-Market"]
-
-        _render_tiered_requirements(test_reqs)
-
-        _ask_ai_button(f"What testing do I need for: {p['name'] or 'my device'}? Contact: {p['contact_type']}, Duration: {p['contact_duration']}, Sterile: {p['sterile']}, Software: {p['has_software']}, Electrical: {p['is_electrical']}", "test_ai")
-
-        if st.button("See Full Requirements (all categories)", key="test_full"):
-            navigate_to("market_entry", step=2)
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 4: PDAC / HCPCS
-# ══════════════════════════════════════════════════════════════════
-
-def render_pdac_hcpcs(step):
-    if step == 0:
-        st.header("PDAC / HCPCS Billing Codes")
-        st.caption(PDAC_HCPCS_GUIDANCE["overview"])
-
-        st.subheader("Select Your Product Category")
-        for cat_name, cat_info in PDAC_HCPCS_GUIDANCE["common_codes"].items():
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                with c1:
-                    st.markdown(f"**{cat_name}**")
-                    st.caption(f"HCPCS Range: {cat_info['range']} -- {cat_info['examples']}")
-                with c2:
-                    if st.button("Select", key=f"pdac_{cat_name}"):
-                        st.session_state["pdac_category"] = cat_name
-                        advance_step()
-
-        _ask_ai_button("Help me determine the correct HCPCS code for my medical device. What information do you need?", "pdac_ai_code")
-
-    elif step == 1:
-        cat = st.session_state.get("pdac_category", "")
-        st.header(f"Submission Requirements: {cat}")
-        if cat:
-            cat_info = PDAC_HCPCS_GUIDANCE["common_codes"].get(cat, {})
-            st.caption(f"HCPCS Range: {cat_info.get('range', '')} -- {cat_info.get('examples', '')}")
-
-        st.subheader("What You Need to Submit")
-        for req in PDAC_HCPCS_GUIDANCE["submission_requirements"]:
-            tier_info = REQUIREMENT_TIERS.get(req["tier"], REQUIREMENT_TIERS["BARE_MINIMUM"])
-            color = tier_info["color"]
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                with c1:
-                    st.markdown(f"**{req['name']}**")
-                    st.caption(req["detail"])
-                with c2:
-                    st.markdown(f'<span style="background:{color}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700;">{tier_info["label"]}</span>', unsafe_allow_html=True)
-
-        _ask_ai_button(f"What documentation do I need to submit a PDAC coding verification request for a {cat} device? Walk me through the process.", "pdac_ai_docs")
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 5: UNDERSTAND A STANDARD
-# ══════════════════════════════════════════════════════════════════
-
-def render_standards_edu(step):
-    if step == 0:
-        st.header("Understand a Standard")
-        st.caption("Pick a topic for a practical, plain-language explanation.")
-
-        topics = [
-            ("iso13485", "ISO 13485:2016 -- Quality Management Systems", "The foundation QMS standard for medical devices. What it requires, clause by clause."),
-            ("qsr_qmsr", "QSR vs QMSR -- What Changed?", "FDA's transition from 21 CFR 820 (QSR) to the new QMSR aligned with ISO 13485. Key differences explained."),
-            ("fda_510k", "FDA 510(k) Process Explained", "How 510(k) works, what you submit, how to find predicates, and common pitfalls."),
-            ("eu_mdr", "EU MDR 2017/745 Explained", "European Medical Device Regulation requirements, Notified Bodies, CE marking, and technical documentation."),
-            ("risk_mgmt", "Risk Management (ISO 14971)", "The risk management process for medical devices -- hazard identification, risk controls, and residual risk."),
-            ("browse_all", "Browse Full Standards Library", "Search and explore all integrated standards, audit checklists, and regulatory knowledge."),
-        ]
-
-        # Search
-        search_query = st.text_input("Search standards knowledge base", placeholder="e.g., CAPA, nebulizer, anti-asphyxia...", key="edu_search")
-        if search_query:
-            results = search_standards_knowledge(search_query)
-            if results:
-                st.success(f"Found {len(results)} result(s)")
-                for std_key, section, content in results[:10]:
-                    with st.expander(f"**{std_key}** - {section}"):
-                        st.write(content[:2000])
-            else:
-                st.warning(f"No results for '{search_query}'")
-
-        cols = st.columns(2)
-        for i, (topic_id, title, desc) in enumerate(topics):
-            with cols[i % 2]:
-                with st.container(border=True):
-                    st.markdown(f"**{title}**")
-                    st.caption(desc)
-                    if st.button("Explore", key=f"edu_{topic_id}"):
-                        st.session_state["edu_topic"] = topic_id
-                        advance_step()
-
-    elif step == 1:
-        topic = st.session_state.get("edu_topic", "browse_all")
-
-        if topic == "iso13485":
-            st.header("ISO 13485:2016 -- Clause-Level Reference")
-            st.caption("Quality management systems -- Requirements for regulatory purposes")
-            for section in ISO_13485_CLAUSES:
-                with st.expander(f"**Section {section['id']} - {section['title']}**"):
-                    for sub in section["subclauses"]:
-                        badge = " :red[**CRITICAL**]" if sub.get("critical") else ""
-                        st.markdown(f"`{sub['id']}` **{sub['title']}**{badge}")
-                        st.caption(sub["summary"])
-                        audit_items = get_audit_checklist_for_clause(sub["id"])
-                        if audit_items:
-                            st.caption(f"Audit checklist: {len(audit_items)} item(s)")
-                        st.markdown("---")
-
-        elif topic == "qsr_qmsr":
-            st.header("QSR vs QMSR -- What Changed?")
-            st.caption("FDA's Quality Management System Regulation (QMSR) replaces the old QSR (21 CFR 820) and aligns with ISO 13485:2016.")
-            st.markdown("""
-**Key Changes:**
-- **Old:** 21 CFR 820 (Quality System Regulation) -- US-specific requirements
-- **New:** QMSR -- incorporates ISO 13485:2016 by reference
-- **Effective:** February 2, 2026
-- **Impact:** Companies with ISO 13485 certification are largely compliant already
-
-**What Stays the Same:**
-- Design controls still required
-- CAPA still required
-- Complaint handling still required
-- Management responsibility still required
-
-**What Changes:**
-- Terminology aligns with ISO 13485 (e.g., "Design History File" terminology)
-- Some US-specific requirements removed or simplified
-- Greater alignment with international requirements = easier multi-market compliance
-""")
-
-            st.subheader("FDA Audit Checklist -- QSR vs QMSR References")
-            for subsystem, data in FDA_AUDIT_CHECKLIST["subsystems"].items():
-                if isinstance(data, dict) and "items" in data:
-                    with st.expander(f"**{subsystem}** ({len(data['items'])} items)"):
-                        for item in data["items"]:
-                            st.markdown(f"**#{item['item']}** - {item['detail']}")
-                            refs = []
-                            if item.get("iso_ref"):
-                                refs.append(f"ISO: {item['iso_ref']}")
-                            if item.get("qsr_ref"):
-                                refs.append(f"QSR: {item['qsr_ref']}")
-                            if refs:
-                                st.caption(" | ".join(refs))
-                            st.markdown("---")
-
-            _ask_ai_button("Explain the key differences between FDA QSR (21 CFR 820) and the new QMSR for a company already certified to ISO 13485. What do we need to change?", "edu_ai_qmsr")
-
-        elif topic == "fda_510k":
-            st.header("FDA 510(k) Process Explained")
-            st.markdown("""
-**What is a 510(k)?**
-
-A 510(k) is a premarket submission to FDA demonstrating that your device is **substantially equivalent** to a legally marketed device (predicate) that is not subject to PMA.
-
-**The Process:**
-1. **Identify your device classification** -- search FDA's Product Classification Database
-2. **Find a predicate device** -- search the 510(k) database
-3. **Determine substantial equivalence** -- same intended use + similar technology
-4. **Prepare your submission** -- technical documentation, testing, labeling
-5. **Submit to FDA** -- electronically via eSTAR
-6. **FDA Review** -- 90-day review clock (often takes 3-6 months)
-7. **Decision** -- Substantially Equivalent (SE), Not SE, or Additional Information needed
-
-**Types of 510(k):**
-- **Traditional** -- most common, full comparison to predicate
-- **Abbreviated** -- uses guidance documents or special controls
-- **Special** -- for modifications to your own cleared device
-
-**Cost:** ~$22,124 (small business) or ~$88,495 (standard) FY2025
-""")
-            _ask_ai_button("Walk me through the 510(k) process step by step for a Class II medical device. What are the most common reasons for FDA rejection?", "edu_ai_510k")
-
-        elif topic == "eu_mdr":
-            st.header("EU MDR 2017/745 Explained")
-            st.markdown("""
-**What is EU MDR?**
-
-The Medical Device Regulation (EU) 2017/745 replaced the old Medical Device Directives (MDD/AIMDD) and is the current regulatory framework for medical devices in the European Union.
-
-**Key Requirements:**
-- **Classification:** Class I, IIa, IIb, III (Annex VIII rules)
-- **Technical Documentation:** Annex II and III requirements
-- **Clinical Evaluation:** Annex XIV -- more rigorous than MDD
-- **Post-Market Surveillance:** Systematic PMS plan required
-- **UDI:** Unique Device Identification system (EUDAMED)
-- **Notified Body:** Required for Class IIa and above
-- **Authorized Representative:** Required for non-EU manufacturers
-
-**Timeline to CE Mark:**
-- Class I: 6-12 months
-- Class IIa: 12-18 months
-- Class IIb: 18-24+ months
-""")
-            _ask_ai_button("Compare EU MDR requirements to FDA 510(k) for a Class II / Class IIa medical device. What additional work is needed for EU market entry?", "edu_ai_mdr")
-
-        elif topic == "risk_mgmt":
-            st.header("Risk Management -- ISO 14971:2019")
-            st.markdown("""
-**ISO 14971 defines the risk management process for medical devices throughout their lifecycle.**
-
-**Key Steps:**
-1. **Risk Management Plan** -- scope, criteria, review schedule
-2. **Hazard Identification** -- systematic identification of hazards
-3. **Risk Estimation** -- severity x probability for each hazardous situation
-4. **Risk Evaluation** -- compare against acceptability criteria
-5. **Risk Control** -- implement controls (inherent safety, protective measures, information)
-6. **Residual Risk Evaluation** -- verify controls are effective
-7. **Risk Management Report** -- summary of entire process
-8. **Production & Post-Production** -- ongoing monitoring
-
-**Risk Acceptability Matrix:**
-- Severity levels: Negligible, Minor, Serious, Critical, Catastrophic
-- Probability levels: Incredible, Remote, Occasional, Probable, Frequent
-""")
-            _ask_ai_button("Help me set up a risk management file for a medical device per ISO 14971. What hazard categories should I consider?", "edu_ai_risk")
-
-        else:  # browse_all
-            st.header("Standards Library")
-            search_query = st.text_input("Search", placeholder="Search standards...", key="lib_search")
-            if search_query:
-                results = search_standards_knowledge(search_query)
-                if results:
-                    for std_key, section, content in results[:20]:
-                        with st.expander(f"**{std_key}** - {section}"):
-                            st.write(content[:2000])
-                else:
-                    st.warning(f"No results for '{search_query}'")
-
-            for std_key, knowledge in ALL_STANDARDS_KNOWLEDGE.items():
-                doc_info = DOCUMENT_REGISTRY.get(std_key, {})
-                with st.expander(f"**{std_key}** - {knowledge['title']}"):
-                    st.markdown(f"**Category:** {doc_info.get('category', 'N/A')} | **Edition:** {doc_info.get('edition', 'N/A')}")
-                    st.write(knowledge.get("scope", ""))
-                    sections = knowledge.get("sections", {})
-                    for sec_key, sec_val in sections.items():
-                        if isinstance(sec_val, str):
-                            with st.expander(f"{sec_key}"):
-                                st.write(sec_val[:3000])
-                        elif isinstance(sec_val, dict):
-                            content = sec_val.get("content", "")
-                            if content:
-                                with st.expander(f"{sec_key} - {sec_val.get('title', '')}"):
-                                    st.write(content[:3000])
-
-            for key, std in STANDARDS_MAP.items():
-                with st.expander(f"**{key}** - {std['title']}"):
-                    st.markdown(f"**Category:** {std['category']}")
-                    st.write(std["summary"])
-                    flags = " ".join(MARKETS[m]["flag"] for m in std["applicableMarkets"] if m in MARKETS)
-                    st.caption(f"Markets: {flags}")
-
-        if st.button("Back to Topics", key="edu_back"):
-            go_to_step(0)
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 6: GAP ANALYSIS & AUDIT PREP
-# ══════════════════════════════════════════════════════════════════
-
-def render_gap_audit(step):
-    if step == 0:
-        st.header("Gap Analysis & Audit Prep")
-        st.caption("What are you preparing for?")
-
-        audit_types = [
-            ("FDA Inspection", "Prepare for an FDA Quality System inspection", ["QMS Foundation", "Management", "Resources", "Design Controls", "Purchasing", "Production", "Feedback & Improvement"]),
-            ("Notified Body Audit", "Prepare for a CE marking / ISO 13485 audit", ["QMS Foundation", "Management", "Resources", "Design Controls", "Purchasing", "Production", "Feedback & Improvement"]),
-            ("Internal Audit", "Run an internal audit against ISO 13485", ["QMS Foundation", "Management", "Resources", "Design Controls", "Purchasing", "Production", "Feedback & Improvement"]),
-            ("Quick Check -- Design Controls Only", "Focus on design and development controls", ["Design Controls"]),
-            ("Quick Check -- CAPA & Complaints", "Focus on feedback and improvement systems", ["Feedback & Improvement"]),
-        ]
-
-        for name, desc, categories in audit_types:
-            with st.container(border=True):
-                c1, c2 = st.columns([3, 1])
-                with c1:
-                    st.markdown(f"**{name}**")
-                    st.caption(desc)
-                with c2:
-                    if st.button("Start", key=f"audit_{name}"):
-                        st.session_state["audit_scope"] = categories
-                        advance_step()
-
-    elif step == 1:
-        scope = st.session_state.get("audit_scope", [])
-        st.header("Assessment")
-        gs = get_gap_stats(gap_statuses())
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Items", gs["total"])
-        c2.metric("Compliant", gs["compliant"])
-        c3.metric("Partial", gs["partial"])
-        c4.metric("Non-Compliant", gs["non_compliant"])
-        c5.metric("Not Assessed", gs["not_assessed"])
-        st.progress(gs["score"] / 100 if gs["score"] > 0 else 0, text=f"{gs['score']}% compliance score")
-
-        categories = list(dict.fromkeys(item["category"] for item in GAP_ANALYSIS_ITEMS))
-        filtered_cats = [c for c in categories if c in scope] if scope else categories
-
-        for cat in filtered_cats:
-            items = [item for item in GAP_ANALYSIS_ITEMS if item["category"] == cat]
-            cat_compliant = sum(1 for i in items if gap_statuses().get(i["id"]) == "compliant")
-
-            with st.expander(f"**{cat}** ({cat_compliant}/{len(items)} compliant)", expanded=True):
-                for item in items:
-                    col_label, col_btns = st.columns([3, 1])
-                    with col_label:
-                        critical_mark = " :red[CRITICAL]" if item.get("critical") else ""
-                        st.markdown(f"**{item['item']}**{critical_mark}")
-                        st.caption(f"Clause {item['clause']}")
-                    with col_btns:
-                        current = gap_statuses().get(item["id"])
-                        options = ["Not assessed", "Compliant", "Partial", "Non-compliant"]
-                        status_map = {"Not assessed": None, "Compliant": "compliant", "Partial": "partial", "Non-compliant": "non-compliant"}
-                        reverse_map = {v: k for k, v in status_map.items()}
-                        current_label = reverse_map.get(current, "Not assessed")
-                        new_label = st.selectbox("Status", options, index=options.index(current_label),
-                                                  key=f"gap_{item['id']}", label_visibility="collapsed")
-                        new_status = status_map[new_label]
-                        if new_status is not None:
-                            st.session_state["gap_statuses"][item["id"]] = new_status
-                        elif item["id"] in st.session_state["gap_statuses"]:
-                            del st.session_state["gap_statuses"][item["id"]]
-
-        if st.button("View Report", key="audit_report", type="primary"):
-            advance_step()
-
-    elif step == 2:
-        st.header("Gap Analysis Report")
-        gs = get_gap_stats(gap_statuses())
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Compliance Score", f"{gs['score']}%")
-        c2.metric("Compliant", gs["compliant"])
-        c3.metric("Gaps Found", gs["non_compliant"] + gs["partial"])
-
-        # Priority actions
-        st.subheader("Priority Actions")
-        critical_gaps = [item for item in GAP_ANALYSIS_ITEMS
-                        if item.get("critical") and gap_statuses().get(item["id"]) == "non-compliant"]
-        other_gaps = [item for item in GAP_ANALYSIS_ITEMS
-                     if gap_statuses().get(item["id"]) == "non-compliant" and item not in critical_gaps]
-        partial_items = [item for item in GAP_ANALYSIS_ITEMS
-                        if gap_statuses().get(item["id"]) == "partial"]
-
-        if critical_gaps:
-            st.error(f"**{len(critical_gaps)} Critical Non-Compliant Items -- Address Immediately**")
-            for item in critical_gaps:
-                st.markdown(f"- **{item['item']}** (Clause {item['clause']})")
-        if other_gaps:
-            st.warning(f"**{len(other_gaps)} Non-Compliant Items**")
-            for item in other_gaps:
-                st.markdown(f"- **{item['item']}** (Clause {item['clause']})")
-        if partial_items:
-            st.info(f"**{len(partial_items)} Partially Compliant Items -- Needs Improvement**")
-            for item in partial_items:
-                st.markdown(f"- **{item['item']}** (Clause {item['clause']})")
-
-        if not critical_gaps and not other_gaps and not partial_items:
-            if gs["compliant"] > 0:
-                st.success("All assessed items are compliant!")
-            else:
-                st.info("No items assessed yet. Go back to the Assessment step to evaluate your QMS.")
-
-        _ask_ai_button(f"Based on my gap analysis: {gs['compliant']} compliant, {gs['partial']} partial, {gs['non_compliant']} non-compliant out of {gs['total']} items. Generate an executive summary and prioritized remediation plan.", "audit_ai_report")
-
-
-# ══════════════════════════════════════════════════════════════════
-# WORKFLOW 7: SITREP ASSISTANT
-# ══════════════════════════════════════════════════════════════════
-
-def _sitrep_ai_response(user_input: str) -> str:
-    """Generate a SITREP-grounded AI response using the existing OpenAI client."""
-    client = get_openai_client()
-    if not client:
-        return "OpenAI API not configured. Add your openai_api_key to .streamlit/secrets.toml."
-    kb = get_sitrep_context(st.session_state.get("sitrep_extra_kb", ""))
-    system = SITREP_SYSTEM_PROMPT + "\n\n--- KNOWLEDGE BASE ---\n" + kb + "\n--- END KNOWLEDGE BASE ---"
-    messages = [{"role": "system", "content": system}]
-    for m in st.session_state["sitrep_messages"][-12:]:
-        messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": user_input})
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=1200,
-            temperature=0.3,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Request failed: {e}"
-
-
-def render_sitrep_assistant(_step):
-    st.header("SITREP Assistant")
-    st.caption("Ask anything about our internal resource hub — policies, tools, team directory, onboarding, and more.")
-
-    tab_chat, tab_admin = st.tabs(["Chat", "Admin / Knowledge Base"])
-
-    with tab_chat:
-        for msg in st.session_state["sitrep_messages"]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        if not st.session_state["sitrep_messages"]:
-            st.markdown("**Try asking:**")
-            suggestions = [
-                "What is Project SITREP?",
-                "How do I submit a help desk ticket?",
-                "Where is the team directory?",
-                "What's the time-off policy?",
-                "What tools do we use and how do I get access?",
-            ]
-            cols = st.columns(2)
-            for i, q in enumerate(suggestions):
-                with cols[i % 2]:
-                    if st.button(q, key=f"sitrep_sugg_{i}", use_container_width=True):
-                        st.session_state["sitrep_messages"].append({"role": "user", "content": q})
-                        with st.spinner("Thinking..."):
-                            answer = _sitrep_ai_response(q)
-                        st.session_state["sitrep_messages"].append({"role": "assistant", "content": answer})
-                        st.rerun()
-
-        if user_input := st.chat_input("Ask about SITREP resources, policies, tools...", key="sitrep_chat_input"):
-            st.session_state["sitrep_messages"].append({"role": "user", "content": user_input})
-            with st.chat_message("user"):
-                st.markdown(user_input)
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    answer = _sitrep_ai_response(user_input)
-                st.markdown(answer)
-            st.session_state["sitrep_messages"].append({"role": "assistant", "content": answer})
-
-        if st.session_state["sitrep_messages"]:
-            if st.button("Clear conversation", key="sitrep_clear"):
-                st.session_state["sitrep_messages"] = []
-                st.rerun()
-
-    with tab_admin:
-        st.markdown("### Knowledge Base Management")
-        st.caption(
-            "Paste content from your Google Intranet (Google Sites) pages here. "
-            "The AI uses this as its source of truth. Changes here last for this session — "
-            "to make them permanent, update src/sitrep_knowledge.py."
-        )
-
-        if not st.session_state["sitrep_admin_unlocked"]:
-            pw = st.text_input("Admin password", type="password", key="sitrep_pw")
-            try:
-                expected = st.secrets.get("sitrep_admin_password", "FDSwVSTr8595%$%")
-            except Exception:
-                expected = "FDSwVSTr8595%$%"
-            if st.button("Unlock", key="sitrep_unlock"):
-                if pw == expected:
-                    st.session_state["sitrep_admin_unlocked"] = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password.")
-        else:
-            st.success("Admin mode active")
-            extra = st.text_area(
-                "Paste Google Sites content here",
-                value=st.session_state["sitrep_extra_kb"],
-                height=300,
-                placeholder=(
-                    "Paste content from your Google Intranet pages.\n\n"
-                    "Example:\n=== Benefits ===\nEmployees receive health, dental, and vision starting Day 1...\n"
-                ),
-                key="sitrep_kb_input",
-            )
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                if st.button("Save to session", key="sitrep_save_kb", type="primary"):
-                    st.session_state["sitrep_extra_kb"] = extra
-                    st.success("Knowledge base updated.")
-            with col2:
-                st.caption("To persist permanently: paste this into SITREP_KNOWLEDGE_BASE in src/sitrep_knowledge.py")
-
-            st.divider()
-            st.markdown("**How to copy content from Google Sites:**")
-            st.markdown(
-                "1. Open the Google Intranet page in Chrome\n"
-                "2. Press `Ctrl+A` to select all, `Ctrl+C` to copy\n"
-                "3. Paste into the text area above and click **Save to session**\n"
-                "4. To make permanent: copy into `src/sitrep_knowledge.py` and redeploy"
-            )
-
-            if st.button("Lock admin", key="sitrep_lock"):
-                st.session_state["sitrep_admin_unlocked"] = False
-                st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════
-# MAIN ROUTER
-# ══════════════════════════════════════════════════════════════════
-
-show_chat = st.session_state.get("show_chat", False)
-wf = st.session_state.get("active_workflow")
-step = st.session_state.get("workflow_step", 0)
-
-if show_chat:
-    main_col, chat_col = st.columns([3, 1])
-    with chat_col:
-        render_chat_panel()
-    with main_col:
-        if wf is None:
-            render_landing_page()
-        elif wf == "market_entry":
-            render_market_entry(step)
-        elif wf == "fiveten_k":
-            render_fiveten_k(step)
-        elif wf == "testing":
-            render_testing(step)
-        elif wf == "pdac_hcpcs":
-            render_pdac_hcpcs(step)
-        elif wf == "standards_edu":
-            render_standards_edu(step)
-        elif wf == "gap_audit":
-            render_gap_audit(step)
-        elif wf == "sitrep_assistant":
-            render_sitrep_assistant(step)
-else:
-    if wf is None:
-        render_landing_page()
-    elif wf == "market_entry":
-        render_market_entry(step)
-    elif wf == "fiveten_k":
-        render_fiveten_k(step)
-    elif wf == "testing":
-        render_testing(step)
-    elif wf == "pdac_hcpcs":
-        render_pdac_hcpcs(step)
-    elif wf == "standards_edu":
-        render_standards_edu(step)
-    elif wf == "gap_audit":
-        render_gap_audit(step)
-    elif wf == "sitrep_assistant":
-        render_sitrep_assistant(step)
+# ===== OHLC TABLE =====
+st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+st.markdown("---")
+st.markdown("### Recent Sessions")
+
+if not hist_1y.empty:
+    recent = hist_1y.tail(15).copy()
+    recent = recent.sort_index(ascending=False)
+    recent["Change"] = recent["Close"] - recent["Close"].shift(-1)
+    recent["Change%"] = (recent["Change"] / recent["Close"].shift(-1)) * 100
+
+    display_df = pd.DataFrame({
+        "Date": recent.index.strftime("%Y-%m-%d"),
+        "Open": recent["Open"].round(2),
+        "High": recent["High"].round(2),
+        "Low": recent["Low"].round(2),
+        "Close": recent["Close"].round(2),
+        "Change": recent["Change"].round(2),
+        "Change%": recent["Change%"].round(2),
+        "Volume": recent["Volume"].astype(int),
+    })
+    display_df = display_df.reset_index(drop=True)
+
+    st.dataframe(
+        display_df.style.format({
+            "Open": "${:.2f}",
+            "High": "${:.2f}",
+            "Low": "${:.2f}",
+            "Close": "${:.2f}",
+            "Change": "${:+.2f}",
+            "Change%": "{:+.2f}%",
+            "Volume": "{:,.0f}",
+        }).applymap(
+            lambda v: "color: #22c55e" if isinstance(v, (int, float)) and v > 0 else "color: #ef4444" if isinstance(v, (int, float)) and v < 0 else "",
+            subset=["Change", "Change%"],
+        ),
+        use_container_width=True,
+        height=400,
+    )
+
+
+# ===== AUTO REFRESH =====
+st.markdown(f"""
+<div style='text-align:center;margin-top:24px;font-size:10px;color:#334155;font-family:"JetBrains Mono",monospace;
+border-top:1px solid rgba(100,116,139,0.08);padding-top:16px;'>
+Data: Yahoo Finance (BZ=F, CL=F) &middot; Monte Carlo: {mc_results['n_sims']:,} GBM sims, trailing 1Y vol &middot; Analyst forecasts from EIA, GS, StanChart, Fitch, JPM<br>
+Conflict data sourced from CRS, IEA, Bloomberg, CNBC, Reuters, Al Jazeera &middot; Not financial advice &middot; Dashboard built {datetime.now().strftime("%Y-%m-%d")}
+</div>
+""", unsafe_allow_html=True)
+
+# Auto-rerun every 30 seconds
+time.sleep(REFRESH_INTERVAL)
+st.rerun()
