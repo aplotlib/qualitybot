@@ -1,7 +1,0 @@
-[server]
-# Required to allow embedding in Google Sites (or any iframe)
-enableCORS = false
-enableXsrfProtection = false
-
-[browser]
-gatherUsageStats = false
