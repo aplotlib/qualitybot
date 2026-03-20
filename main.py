@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STRATCOM OIL & COMMODITY TACTICAL DASHBOARD
+OVERWATCH: TACTICAL COMMODITY DASHBOARD
 ===========================================
 Primary Focus: Brent Crude, Hormuz Theater, Med-Dev Supply Chain Impacts
 """
@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 # CONFIG & AUTO-REFRESH
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="STRATCOM SITREP", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="OVERWATCH SITREP", page_icon="📡", layout="wide", initial_sidebar_state="expanded")
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -31,6 +31,17 @@ except ImportError:
 TARGET_PRICE = 94.50
 TARGET_DATE = datetime(2026, 6, 15)
 CACHE_TTL = 120
+
+# ---------------------------------------------------------------------------
+# UI HELPERS (Defined early to prevent NameError)
+# ---------------------------------------------------------------------------
+def var_color(val):
+    """Returns CSS color variable based on positive/negative float value."""
+    try:
+        val = float(val)
+        return "var(--green)" if val > 0 else "var(--red)" if val < 0 else "#94a3b8"
+    except (ValueError, TypeError):
+        return "#94a3b8"
 
 # ---------------------------------------------------------------------------
 # TACTICAL UI/UX CSS
@@ -131,10 +142,10 @@ def tactical_monte_carlo(df, current_price, target_price, days_to_target, n_sims
     sig_war = sig_base * 2.2   # 120% increase in volatility
     
     np.random.seed(42)
-    prices = np.zeros((n_sims, days_to_target))
+    prices = np.zeros((n_sims, max(1, days_to_target)))
     prices[:, 0] = current_price
     
-    for t in range(1, days_to_target):
+    for t in range(1, max(1, days_to_target)):
         # 1% daily chance of severe escalation jump
         jump = np.where(np.random.random(n_sims) < 0.01, np.random.normal(0.05, 0.02, n_sims), 0)
         shock = np.random.normal(mu_war, sig_war, n_sims)
@@ -177,14 +188,14 @@ data = fetch_stratcom_data()
 
 # Side Navigation
 with st.sidebar:
-    st.markdown("<h2 style='color:var(--cyan); margin-bottom: 0;'>CENTCOM</h2>", unsafe_allow_html=True)
-    st.markdown("<p class='mono-text' style='color:#64748b; font-size: 10px;'>INTELLIGENCE DIRECTORATE</p>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color:var(--cyan); margin-bottom: 0;'>OVERWATCH</h2>", unsafe_allow_html=True)
+    st.markdown("<p class='mono-text' style='color:#64748b; font-size: 10px;'>GLOBAL THREAT & COMMODITY DIRECTORATE</p>", unsafe_allow_html=True)
     st.markdown("---")
     
     menu = st.radio("OPERATIONAL VIEWS", ["1. GLOBAL ENERGY (BRENT)", "2. HORMUZ THEATER", "3. MED-DEV SUPPLY CHAIN"])
     
     st.markdown("---")
-    st.markdown("<div class='tac-panel alert-critical'><div class='panel-title'>DEFCON STATUS</div><div class='panel-value' style='font-size: 20px;'>ELEVATED (2)</div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='tac-panel alert-critical'><div class='panel-title'>THREAT LEVEL</div><div class='panel-value' style='font-size: 20px;'>ELEVATED (2)</div></div>", unsafe_allow_html=True)
     
     if st.button("EXECUTE REFRESH [F5]"):
         st.cache_data.clear()
@@ -225,7 +236,7 @@ if menu.startswith("1"):
             st.plotly_chart(fig, use_container_width=True)
             
     with c_pred:
-        days_out = (TARGET_DATE - datetime.now()).days
+        days_out = max(1, (TARGET_DATE - datetime.now()).days)
         mc_res, _ = tactical_monte_carlo(brent, current_bz, TARGET_PRICE, days_out)
         
         if mc_res:
@@ -287,7 +298,7 @@ elif menu.startswith("2"):
         st.markdown("""
         <div class='tac-panel' style='height: 330px; display:flex; flex-direction:column; justify-content:center; align-items:center;'>
             <div class='mono-text' style='color:var(--red); font-size:40px; margin-bottom:10px;'>⚠</div>
-            <div class='mono-text' style='color:#fff; text-align:center;'>CENTCOM MARITIME MAP<br>CURRENTLY UNAVAILABLE</div>
+            <div class='mono-text' style='color:#fff; text-align:center;'>OVERWATCH MARITIME MAP<br>CURRENTLY UNAVAILABLE</div>
             <div class='mono-text' style='color:#64748b; font-size:10px; margin-top:20px;'>AWAITING SATELLITE TELEMETRY LINK</div>
         </div>
         """, unsafe_allow_html=True)
@@ -369,7 +380,3 @@ elif menu.startswith("3"):
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-# Helper function for dynamic coloring
-def var_color(val):
-    return "var(--green)" if val > 0 else "var(--red)" if val < 0 else "#94a3b8"
