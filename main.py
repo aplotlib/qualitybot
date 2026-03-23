@@ -336,6 +336,131 @@ def format_data_age(fetch_time):
 
 
 # ---------------------------------------------------------------------------
+# LIVE RECON: OPENSKY NETWORK ADS-B + VESSELFINDER AIS
+# ---------------------------------------------------------------------------
+# Persian Gulf / Hormuz bounding box
+HORMUZ_BBOX = {"lamin": 23.0, "lamax": 28.5, "lomin": 51.0, "lomax": 59.0}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_opensky_adsb():
+    """
+    Pulls live ADS-B aircraft positions from OpenSky Network REST API.
+    Free, no auth required (anonymous: 10 req/min, registered: 100/min).
+    Returns a DataFrame of aircraft currently in the Persian Gulf region.
+    """
+    url = "https://opensky-network.org/api/states/all"
+    params = {
+        "lamin": HORMUZ_BBOX["lamin"],
+        "lamax": HORMUZ_BBOX["lamax"],
+        "lomin": HORMUZ_BBOX["lomin"],
+        "lomax": HORMUZ_BBOX["lomax"],
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            return pd.DataFrame(), f"HTTP {resp.status_code}"
+        data = resp.json()
+        states = data.get("states", [])
+        if not states:
+            return pd.DataFrame(), "No aircraft in AOI"
+
+        # OpenSky state vector columns:
+        # 0:icao24, 1:callsign, 2:origin_country, 3:time_position, 4:last_contact,
+        # 5:longitude, 6:latitude, 7:baro_altitude, 8:on_ground, 9:velocity,
+        # 10:true_track, 11:vertical_rate, 12:sensors, 13:geo_altitude,
+        # 14:squawk, 15:spi, 16:position_source, 17:category
+        rows = []
+        for s in states:
+            if s[5] is not None and s[6] is not None:
+                rows.append({
+                    "icao24": s[0],
+                    "callsign": (s[1] or "").strip(),
+                    "origin": s[2] or "",
+                    "lon": s[5],
+                    "lat": s[6],
+                    "alt_m": s[7] if s[7] is not None else 0,
+                    "on_ground": s[8],
+                    "velocity_ms": s[9] if s[9] is not None else 0,
+                    "heading": s[10] if s[10] is not None else 0,
+                    "vert_rate": s[11] if s[11] is not None else 0,
+                })
+        df = pd.DataFrame(rows)
+        ts = data.get("time", 0)
+        return df, f"{len(df)} aircraft | {datetime.utcfromtimestamp(ts).strftime('%H:%M:%SZ')}"
+    except requests.exceptions.Timeout:
+        return pd.DataFrame(), "Timeout (OpenSky may be slow)"
+    except Exception as e:
+        return pd.DataFrame(), f"Error: {e}"
+
+
+def build_adsb_map(df):
+    """Builds a Plotly scattermapbox of live aircraft positions."""
+    if df.empty:
+        return None
+
+    df["alt_ft"] = (df["alt_m"] * 3.281).astype(int)
+    df["speed_kts"] = (df["velocity_ms"] * 1.944).astype(int)
+    df["label"] = df.apply(
+        lambda r: f"{r['callsign'] or r['icao24']} | {r['origin']}<br>"
+                  f"ALT: {r['alt_ft']}ft | SPD: {r['speed_kts']}kts",
+        axis=1,
+    )
+
+    # Color by altitude: low=cyan, mid=amber, high=red
+    alt_colors = []
+    for alt in df["alt_ft"]:
+        if alt < 5000:
+            alt_colors.append("#06b6d4")
+        elif alt < 20000:
+            alt_colors.append("#f59e0b")
+        else:
+            alt_colors.append("#ef4444")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scattermapbox(
+        lat=df["lat"],
+        lon=df["lon"],
+        mode="markers+text",
+        marker=dict(size=8, color=alt_colors, opacity=0.9),
+        text=df["callsign"],
+        textposition="top right",
+        textfont=dict(size=8, color="#94a3b8", family="Share Tech Mono"),
+        hovertext=df["label"],
+        hoverinfo="text",
+        name="Aircraft",
+    ))
+
+    # Add Hormuz strait marker
+    fig.add_trace(go.Scattermapbox(
+        lat=[26.57], lon=[56.25],
+        mode="markers+text",
+        marker=dict(size=12, color="#ef4444", symbol="circle"),
+        text=["HORMUZ"],
+        textposition="bottom center",
+        textfont=dict(size=10, color="#ef4444", family="Share Tech Mono"),
+        hovertext=["Strait of Hormuz - Critical Chokepoint"],
+        hoverinfo="text",
+        name="Chokepoint",
+    ))
+
+    fig.update_layout(
+        mapbox=dict(
+            style="carto-darkmatter",
+            center=dict(lat=26.0, lon=55.5),
+            zoom=5.5,
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Share Tech Mono", color="#94a3b8"),
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=480,
+        showlegend=False,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # FUNDAMENTAL EQUILIBRIUM ESTIMATOR
 # ---------------------------------------------------------------------------
 def estimate_fundamental_equilibrium(df_1y, df_5y):
@@ -1158,30 +1283,54 @@ elif menu.startswith("2"):
 
     with c_ship:
         st.markdown(
-            "<div class='panel-title' style='color:var(--cyan);'>LIVE AIS MARITIME RADAR (STRAIT OF HORMUZ)</div>",
+            "<div class='panel-title' style='color:var(--cyan);'>LIVE AIS MARITIME TRAFFIC (STRAIT OF HORMUZ)</div>",
             unsafe_allow_html=True,
         )
-        marine_traffic_html = """
-        <script type="text/javascript">
-            width='100%'; height='450'; border='0'; shownames='false';
-            latitude='26.4'; longitude='56.2'; zoom='7'; maptype='2'; trackvessel='0'; fleet='';
-        </script>
-        <script type="text/javascript" src="https://www.marinetraffic.com/js/embed.js"></script>
-        <div style="font-family: monospace; font-size: 10px; color: #64748b; margin-top:5px; text-align: right;">DATA: MARINETRAFFIC AIS</div>
+        # VesselFinder free embed -- explicitly supports iframe embedding
+        vf_html = """
+        <iframe
+            src="https://www.vesselfinder.com/aismap?lat=26.4&lon=56.2&zoom=7&width=100%25&height=460&names=false&mmsi=0&track=0&fleet=&fleet_name=&fleet_id="
+            style="width:100%; height:460px; border:1px solid #1e293b; border-radius:4px;"
+            sandbox="allow-scripts allow-same-origin"
+            loading="lazy"
+        ></iframe>
+        <div style="font-family: monospace; font-size: 10px; color: #64748b; margin-top:5px; text-align: right;">
+            DATA: VESSELFINDER LIVE AIS | <a href="https://www.vesselfinder.com/?lat=26.4&lon=56.2&zoom=7" target="_blank" style="color:#06b6d4;">OPEN FULL MAP</a>
+        </div>
         """
-        components.html(marine_traffic_html, height=480)
+        components.html(vf_html, height=500)
 
     with c_air:
         st.markdown(
             "<div class='panel-title' style='color:var(--cyan);'>LIVE ADS-B FLIGHT RADAR (PERSIAN GULF)</div>",
             unsafe_allow_html=True,
         )
-        adsb_url = "https://globe.adsbexchange.com/?lat=26.4&lon=56.2&zoom=7&hideSidebar=1&hideButtons=1"
-        components.iframe(adsb_url, height=450)
-        st.markdown(
-            "<div style='font-family: monospace; font-size: 10px; color: #64748b; text-align: right;'>DATA: ADSB EXCHANGE RAW TELEMETRY</div>",
-            unsafe_allow_html=True,
-        )
+        adsb_df, adsb_status = fetch_opensky_adsb()
+
+        if not adsb_df.empty:
+            fig_adsb = build_adsb_map(adsb_df)
+            if fig_adsb:
+                st.plotly_chart(fig_adsb, use_container_width=True)
+            st.markdown(
+                f"<div style='font-family: monospace; font-size: 10px; color: #64748b; text-align: right;'>"
+                f"DATA: OPENSKY NETWORK LIVE ADS-B | {adsb_status} | "
+                f"<span style='color:#06b6d4;'>LOW</span> "
+                f"<span style='color:#f59e0b;'>MED</span> "
+                f"<span style='color:#ef4444;'>HIGH</span> ALT</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            # Fallback: show status and a static reference map
+            st.markdown(
+                f"<div class='tac-panel alert-warn' style='height:460px; display:flex; flex-direction:column; justify-content:center; align-items:center;'>"
+                f"<div class='panel-title'>ADS-B FEED STATUS</div>"
+                f"<div class='mono-text' style='color:var(--amber); font-size:14px; margin-top:10px;'>{adsb_status}</div>"
+                f"<div class='mono-text' style='color:#64748b; font-size:11px; margin-top:15px; text-align:center; line-height:1.6;'>"
+                f"OpenSky Network may be temporarily unavailable.<br>"
+                f"Data refreshes every 60 seconds automatically.<br>"
+                f"Anonymous access: 10 req/min rate limit.</div></div>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("---")
     st.markdown(
