@@ -24,6 +24,9 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
 import json
+import time
+import random
+import requests
 
 warnings.filterwarnings("ignore")
 
@@ -44,7 +47,7 @@ try:
 except ImportError:
     pass
 
-CACHE_TTL = 120
+CACHE_TTL = 300  # default; overridden by sidebar
 
 # ---------------------------------------------------------------------------
 # UI HELPERS
@@ -142,6 +145,27 @@ p, span, div, label { font-family: var(--sans); }
 .diag-label { color: #94a3b8; font-family: var(--mono); font-size: 11px; }
 .diag-value { color: #fff; font-family: var(--mono); font-size: 11px; }
 
+/* DATA FRESHNESS BAR */
+.freshness-bar {
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    background: rgba(0,0,0,0.4); border: 1px solid #1e293b;
+    border-radius: 3px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.freshness-dot {
+    width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+}
+.freshness-item {
+    font-family: var(--mono); font-size: 9px; color: #94a3b8;
+    display: inline-flex; align-items: center; gap: 4px; margin-right: 10px;
+}
+.source-tag {
+    font-family: var(--mono); font-size: 8px; padding: 1px 4px;
+    border-radius: 2px; display: inline-block;
+}
+.src-yf { background: rgba(6, 182, 212, 0.2); color: var(--cyan); }
+.src-fred { background: rgba(16, 185, 129, 0.2); color: var(--green); }
+.src-fail { background: rgba(239, 68, 68, 0.2); color: var(--red); }
+
 /* STREAMLIT OVERRIDES */
 #MainMenu, footer, header {visibility: hidden;}
 div[data-baseweb="input"] { background-color: rgba(15, 23, 42, 0.8) !important; border: 1px solid var(--cyan) !important; color: #fff !important; }
@@ -152,37 +176,163 @@ div[data-baseweb="select"] > div { background-color: rgba(15, 23, 42, 0.8) !impo
 )
 
 # ---------------------------------------------------------------------------
-# DATA ENGINE
+# DATA ENGINE (MULTI-SOURCE, RETRY-HARDENED)
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def fetch_stratcom_data():
-    """Fetches energy, metals, volatility, and macro data."""
-    result: dict = {"error": None}
+# FRED API: Free, extremely reliable (US Federal Reserve infrastructure)
+# Register for a free key at https://fred.stlouisfed.org/docs/api/api_key.html
+# Series: DCOILBRENTEU (Brent daily), DCOILWTICO (WTI daily)
+FRED_SERIES = {
+    "brent": "DCOILBRENTEU",
+    "wti": "DCOILWTICO",
+}
+
+
+def _fetch_single_yf(ticker: str, period: str, interval: str, retries: int = 3) -> pd.DataFrame:
+    """
+    Fetch a single ticker from yfinance with exponential backoff + jitter.
+    Individual fetches are far less likely to get rate-limited than batch.
+    """
+    for attempt in range(retries):
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, interval=interval)
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            pass
+        # Exponential backoff: 1s, 2s, 4s + random jitter 0-1s
+        wait = (2 ** attempt) + random.uniform(0, 1)
+        time.sleep(wait)
+    return pd.DataFrame()
+
+
+def _fetch_fred_series(series_id: str, lookback_days: int = 400) -> pd.DataFrame:
+    """
+    Fetch daily price data from FRED (Federal Reserve Economic Data).
+    No API key required for basic access; key improves rate limits.
+    Returns DataFrame with DatetimeIndex and 'Close' column to match yfinance shape.
+    """
+    fred_key = st.secrets.get("FRED_API_KEY", "")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": series_id,
+        "observation_start": start_date,
+        "observation_end": end_date,
+        "file_type": "json",
+        "sort_order": "asc",
+    }
+    if fred_key:
+        params["api_key"] = fred_key
+
     try:
-        # --- Energy complex ---
-        energy = yf.Tickers("BZ=F CL=F NG=F")
-        result["brent_1y"] = energy.tickers["BZ=F"].history(period="1y", interval="1d")
-        result["brent_5y"] = energy.tickers["BZ=F"].history(period="5y", interval="1wk")
-        result["brent_1d"] = energy.tickers["BZ=F"].history(period="1d", interval="1m")
-        result["wti_1d"] = energy.tickers["CL=F"].history(period="1d", interval="1m")
-        result["wti_1y"] = energy.tickers["CL=F"].history(period="1y", interval="1d")
-        result["natgas_1y"] = energy.tickers["NG=F"].history(period="1y", interval="1d")
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json().get("observations", [])
+        if not data:
+            return pd.DataFrame()
 
-        # --- Volatility & macro ---
-        macro = yf.Tickers("^OVX DX-Y.NYB")
-        result["ovx_1y"] = macro.tickers["^OVX"].history(period="1y", interval="1d")
-        result["dxy_1y"] = macro.tickers["DX-Y.NYB"].history(period="1y", interval="1d")
+        rows = []
+        for obs in data:
+            if obs["value"] != ".":
+                rows.append({"date": obs["date"], "Close": float(obs["value"])})
+        if not rows:
+            return pd.DataFrame()
 
-        # --- Materials ---
-        mats = yf.Tickers("ALI=F HG=F DOW")
-        result["alum_1y"] = mats.tickers["ALI=F"].history(period="1y", interval="1d")
-        result["copper_1y"] = mats.tickers["HG=F"].history(period="1y", interval="1d")
-        result["plastic_proxy_1y"] = mats.tickers["DOW"].history(period="1y", interval="1d")
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+        # Add OHLV columns to match yfinance shape
+        df["Open"] = df["Close"]
+        df["High"] = df["Close"]
+        df["Low"] = df["Close"]
+        df["Volume"] = 0
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-        result["fetch_time"] = datetime.now()
-    except Exception as e:
-        result["error"] = str(e)
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def fetch_stratcom_data(cache_ttl_key: int = 300):
+    """
+    Multi-source data engine with FRED fallback and per-source freshness tracking.
+    cache_ttl_key is a dummy param that changes when TTL changes, busting the cache.
+    """
+    result: dict = {"error": None, "sources": {}, "fetch_time": datetime.now()}
+
+    # --- HELPER: fetch with source tracking ---
+    def tracked_fetch(key, ticker, period, interval, fred_series=None, fred_days=400):
+        """Try yfinance first, then FRED fallback. Track which source succeeded."""
+        df = _fetch_single_yf(ticker, period, interval)
+        if not df.empty:
+            result["sources"][key] = {
+                "source": "yfinance",
+                "rows": len(df),
+                "latest": df.index[-1].strftime("%Y-%m-%d %H:%M") if hasattr(df.index[-1], "strftime") else str(df.index[-1]),
+            }
+            return df
+
+        # FRED fallback (daily data only, no intraday)
+        if fred_series and interval in ("1d", "1wk"):
+            df_fred = _fetch_fred_series(fred_series, lookback_days=fred_days)
+            if not df_fred.empty:
+                result["sources"][key] = {
+                    "source": "FRED",
+                    "rows": len(df_fred),
+                    "latest": df_fred.index[-1].strftime("%Y-%m-%d"),
+                }
+                return df_fred
+
+        result["sources"][key] = {"source": "FAILED", "rows": 0, "latest": "N/A"}
+        return pd.DataFrame()
+
+    # --- ENERGY COMPLEX (staggered fetches to avoid rate limiting) ---
+    result["brent_1y"] = tracked_fetch("brent_1y", "BZ=F", "1y", "1d", fred_series="DCOILBRENTEU")
+    time.sleep(0.5)
+    result["brent_5y"] = tracked_fetch("brent_5y", "BZ=F", "5y", "1wk", fred_series="DCOILBRENTEU", fred_days=1900)
+    time.sleep(0.5)
+    result["brent_1d"] = tracked_fetch("brent_1d", "BZ=F", "1d", "1m")  # no FRED fallback for intraday
+    time.sleep(0.5)
+    result["wti_1d"] = tracked_fetch("wti_1d", "CL=F", "1d", "1m")
+    time.sleep(0.5)
+    result["wti_1y"] = tracked_fetch("wti_1y", "CL=F", "1y", "1d", fred_series="DCOILWTICO")
+    time.sleep(0.5)
+    result["natgas_1y"] = tracked_fetch("natgas_1y", "NG=F", "1y", "1d")
+    time.sleep(0.5)
+
+    # --- VOLATILITY & MACRO ---
+    result["ovx_1y"] = tracked_fetch("ovx_1y", "^OVX", "1y", "1d")
+    time.sleep(0.5)
+    result["dxy_1y"] = tracked_fetch("dxy_1y", "DX-Y.NYB", "1y", "1d")
+    time.sleep(0.5)
+
+    # --- MATERIALS ---
+    result["alum_1y"] = tracked_fetch("alum_1y", "ALI=F", "1y", "1d")
+    time.sleep(0.5)
+    result["copper_1y"] = tracked_fetch("copper_1y", "HG=F", "1y", "1d")
+    time.sleep(0.5)
+    result["plastic_proxy_1y"] = tracked_fetch("plastic_proxy_1y", "DOW", "1y", "1d")
+
+    result["fetch_time"] = datetime.now()
     return result
+
+
+def format_data_age(fetch_time):
+    """Returns a human-readable age string + color class for staleness."""
+    if fetch_time is None:
+        return "UNKNOWN", "var(--red)"
+    age = (datetime.now() - fetch_time).total_seconds()
+    if age < 120:
+        return f"{int(age)}S AGO", "var(--green)"
+    elif age < 600:
+        return f"{int(age / 60)}M AGO", "var(--cyan)"
+    elif age < 3600:
+        return f"{int(age / 60)}M AGO", "var(--amber)"
+    else:
+        return f"{int(age / 3600)}H AGO", "var(--red)"
 
 
 # ---------------------------------------------------------------------------
@@ -631,18 +781,26 @@ Be specific with numbers. No filler. This goes directly to procurement and quali
 # ---------------------------------------------------------------------------
 # MAIN APP
 # ---------------------------------------------------------------------------
-data = fetch_stratcom_data()
+# Cache TTL is configurable from sidebar (needs to be before sidebar renders)
+if "cache_ttl" not in st.session_state:
+    st.session_state["cache_ttl"] = 300
+
+data = fetch_stratcom_data(cache_ttl_key=st.session_state["cache_ttl"])
 
 brent = data.get("brent_1y", pd.DataFrame())
 brent_5y = data.get("brent_5y", pd.DataFrame())
 brent_1d = data.get("brent_1d", pd.DataFrame())
 wti_1y = data.get("wti_1y", pd.DataFrame())
 
+# Best-effort current price: intraday -> daily -> FRED daily
 current_bz = 0.0
+bz_source_label = "N/A"
 if not brent_1d.empty:
     current_bz = brent_1d["Close"].iloc[-1]
+    bz_source_label = "INTRADAY"
 elif not brent.empty:
     current_bz = brent["Close"].iloc[-1]
+    bz_source_label = "DAILY CLOSE"
 
 bz_change = current_bz - brent["Close"].iloc[-2] if len(brent) > 1 else 0.0
 
@@ -651,6 +809,10 @@ ovx_val = ovx_df["Close"].iloc[-1] if not ovx_df.empty else 0.0
 
 dxy_df = data.get("dxy_1y", pd.DataFrame())
 dxy_val = dxy_df["Close"].iloc[-1] if not dxy_df.empty else 0.0
+
+fetch_time = data.get("fetch_time", None)
+data_age_str, data_age_color = format_data_age(fetch_time)
+sources = data.get("sources", {})
 
 # Estimate fundamental equilibrium
 auto_eq = estimate_fundamental_equilibrium(brent, brent_5y)
@@ -665,7 +827,7 @@ with st.sidebar:
     )
     st.markdown(
         "<p class='mono-text' style='color:#64748b; font-size: 10px;'>"
-        "GLOBAL THREAT & COMMODITY DIRECTORATE v2.0</p>",
+        "GLOBAL THREAT & COMMODITY DIRECTORATE v2.1</p>",
         unsafe_allow_html=True,
     )
     st.markdown("---")
@@ -708,9 +870,40 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.markdown("<div class='panel-title'>DATA & CACHING</div>", unsafe_allow_html=True)
+    cache_ttl_opt = st.select_slider(
+        "CACHE TTL (SEC):",
+        options=[60, 120, 300, 600, 900, 1800],
+        value=st.session_state.get("cache_ttl", 300),
+        help="Higher = fewer API calls = less rate-limiting. 300s recommended.",
+    )
+    if cache_ttl_opt != st.session_state.get("cache_ttl"):
+        st.session_state["cache_ttl"] = cache_ttl_opt
+        st.cache_data.clear()
+        st.rerun()
+
+    # Data source status
+    yf_count = sum(1 for s in sources.values() if s.get("source") == "yfinance")
+    fred_count = sum(1 for s in sources.values() if s.get("source") == "FRED")
+    fail_count = sum(1 for s in sources.values() if s.get("source") == "FAILED")
+    total = len(sources)
+
+    st.markdown(
+        f"<div style='margin-top:8px;'>"
+        f"<span class='source-tag src-yf'>YF: {yf_count}/{total}</span> "
+        f"<span class='source-tag src-fred'>FRED: {fred_count}/{total}</span> "
+        f"<span class='source-tag src-fail'>FAIL: {fail_count}/{total}</span>"
+        f"</div>"
+        f"<p class='mono-text' style='color:{data_age_color}; font-size:10px; margin-top:4px;'>"
+        f"DATA AGE: {data_age_str}</p>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("---")
     st.markdown(
         "<p class='mono-text' style='color:#94a3b8; font-size:9px;'>"
-        "FINANCIALS: LIVE YFINANCE<br>"
+        "PRIMARY: YFINANCE (INDIVIDUAL+RETRY)<br>"
+        "FALLBACK: FRED API (DAILY CLOSE)<br>"
         "MAPS: LIVE SATELLITE AIS/ADSB<br>"
         "MODEL: O-U MEAN-REVERTING JUMP-DIFFUSION<br>"
         "AI: ANTHROPIC CLAUDE + WEB SEARCH</p>",
@@ -739,19 +932,41 @@ spread = current_bz - cur_wti
 if menu.startswith("1"):
     st.markdown("<h2>GLOBAL ENERGY TRACKER: BRENT CRUDE (BZ=F)</h2>", unsafe_allow_html=True)
 
+    # --- Data freshness bar ---
+    source_items_html = ""
+    for key in ["brent_1d", "brent_1y", "wti_1d", "ovx_1y"]:
+        s = sources.get(key, {})
+        src = s.get("source", "?")
+        src_cls = "src-yf" if src == "yfinance" else "src-fred" if src == "FRED" else "src-fail"
+        dot_color = "var(--green)" if src == "yfinance" else "var(--cyan)" if src == "FRED" else "var(--red)"
+        label = key.upper().replace("_", " ")
+        source_items_html += (
+            f"<span class='freshness-item'>"
+            f"<span class='freshness-dot' style='background:{dot_color};'></span>"
+            f"{label} <span class='source-tag {src_cls}'>{src}</span></span>"
+        )
+    st.markdown(
+        f"<div class='freshness-bar'>"
+        f"<span class='freshness-item' style='color:{data_age_color};'>FETCHED: {data_age_str}</span>"
+        f"{source_items_html}</div>",
+        unsafe_allow_html=True,
+    )
+
     # --- Top cards ---
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(
-            f"<div class='tac-panel'><div class='panel-title'>BRENT SPOT [LIVE]</div>"
+            f"<div class='tac-panel'><div class='panel-title'>BRENT SPOT [{bz_source_label}]</div>"
             f"<div class='panel-value'>${current_bz:.2f} "
             f"<span style='font-size:14px; color:{var_color(bz_change)}'>[{bz_change:+.2f}]</span>"
             f"</div></div>",
             unsafe_allow_html=True,
         )
     with c2:
+        wti_src = sources.get("wti_1d", {}).get("source", "?")
+        wti_label = "INTRADAY" if wti_src == "yfinance" and not data.get("wti_1d", pd.DataFrame()).empty else "DAILY"
         st.markdown(
-            f"<div class='tac-panel'><div class='panel-title'>WTI SPOT [LIVE]</div>"
+            f"<div class='tac-panel'><div class='panel-title'>WTI SPOT [{wti_label}]</div>"
             f"<div class='panel-value'>${cur_wti:.2f}</div></div>",
             unsafe_allow_html=True,
         )
@@ -883,6 +1098,37 @@ if menu.startswith("1"):
 """,
                 unsafe_allow_html=True,
             )
+
+    # --- Data source diagnostics ---
+    with st.expander("DATA SOURCE DIAGNOSTICS", expanded=False):
+        source_rows = ""
+        for key, info in sorted(sources.items()):
+            src = info.get("source", "?")
+            src_cls = "src-yf" if src == "yfinance" else "src-fred" if src == "FRED" else "src-fail"
+            source_rows += (
+                f"<div class='diag-row'>"
+                f"<span class='diag-label'>{key.upper()}</span>"
+                f"<span class='diag-value'>"
+                f"<span class='source-tag {src_cls}'>{src}</span> "
+                f"{info.get('rows', 0)} rows | latest: {info.get('latest', 'N/A')}"
+                f"</span></div>"
+            )
+        fred_key_status = "CONFIGURED" if st.secrets.get("FRED_API_KEY", "") else "NOT SET (anonymous access)"
+        st.markdown(
+            f"<div class='tac-panel' style='padding:12px;'>"
+            f"<div class='panel-title'>PER-TICKER SOURCE & FRESHNESS</div>"
+            f"{source_rows}"
+            f"<div style='margin-top:10px; padding-top:8px; border-top:1px dashed #1e293b;'>"
+            f"<div class='mono-text' style='font-size:10px; color:#64748b; line-height:1.6;'>"
+            f"FETCH STRATEGY: Individual tickers with 3x exponential backoff + jitter (0.5s inter-ticker delay).<br>"
+            f"FALLBACK: FRED API for daily Brent/WTI when yfinance is rate-limited.<br>"
+            f"FRED KEY: {fred_key_status}<br>"
+            f"NOTE: yfinance futures data is inherently 15-20 min delayed on free tier. "
+            f"FRED provides daily close only (no intraday). For real-time futures, "
+            f"a paid feed (Polygon, Twelve Data, etc.) is required."
+            f"</div></div></div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ===========================================================================
