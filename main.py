@@ -336,83 +336,151 @@ def format_data_age(fetch_time):
 
 
 # ---------------------------------------------------------------------------
-# LIVE RECON: OPENSKY NETWORK ADS-B + VESSELFINDER AIS
+# LIVE RECON: ADS-B FLIGHT TRACKING + VESSELFINDER AIS
 # ---------------------------------------------------------------------------
-# Persian Gulf / Hormuz bounding box
-HORMUZ_BBOX = {"lamin": 23.0, "lamax": 28.5, "lomin": 51.0, "lomax": 59.0}
+# Persian Gulf / Hormuz center and radius
+HORMUZ_CENTER = {"lat": 26.0, "lon": 55.5}
+HORMUZ_RADIUS_NM = 250  # nautical miles
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_opensky_adsb():
+def _parse_adsb_lol(data: dict) -> pd.DataFrame:
+    """Parse adsb.lol API response into a standard DataFrame."""
+    ac_list = data.get("ac", [])
+    if not ac_list:
+        return pd.DataFrame()
+    rows = []
+    for ac in ac_list:
+        lat = ac.get("lat")
+        lon = ac.get("lon")
+        if lat is None or lon is None:
+            continue
+        rows.append({
+            "icao24": ac.get("hex", ""),
+            "callsign": (ac.get("flight") or "").strip(),
+            "origin": ac.get("r", ""),  # registration country
+            "type": ac.get("t", ""),  # aircraft type
+            "lon": lon,
+            "lat": lat,
+            "alt_m": (ac.get("alt_baro", 0) or 0) * 0.3048 if isinstance(ac.get("alt_baro"), (int, float)) else 0,
+            "alt_ft_raw": ac.get("alt_baro", 0) if isinstance(ac.get("alt_baro"), (int, float)) else 0,
+            "on_ground": ac.get("alt_baro") == "ground",
+            "velocity_ms": (ac.get("gs", 0) or 0) * 0.5144,  # ground speed kts -> m/s
+            "speed_kts_raw": ac.get("gs", 0) or 0,
+            "heading": ac.get("track", 0) or 0,
+        })
+    return pd.DataFrame(rows)
+
+
+def _parse_opensky(data: dict) -> pd.DataFrame:
+    """Parse OpenSky Network API response into a standard DataFrame."""
+    states = data.get("states", [])
+    if not states:
+        return pd.DataFrame()
+    rows = []
+    for s in states:
+        if s[5] is not None and s[6] is not None:
+            alt_m = s[7] if s[7] is not None else 0
+            vel_ms = s[9] if s[9] is not None else 0
+            rows.append({
+                "icao24": s[0],
+                "callsign": (s[1] or "").strip(),
+                "origin": s[2] or "",
+                "type": "",
+                "lon": s[5],
+                "lat": s[6],
+                "alt_m": alt_m,
+                "alt_ft_raw": int(alt_m * 3.281),
+                "on_ground": s[8],
+                "velocity_ms": vel_ms,
+                "speed_kts_raw": int(vel_ms * 1.944),
+                "heading": s[10] if s[10] is not None else 0,
+            })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def fetch_adsb_data():
     """
-    Pulls live ADS-B aircraft positions from OpenSky Network REST API.
-    Free, no auth required (anonymous: 10 req/min, registered: 100/min).
-    Returns a DataFrame of aircraft currently in the Persian Gulf region.
+    Multi-source ADS-B fetcher: adsb.lol (primary) -> OpenSky (fallback).
+
+    adsb.lol: Free community ADS-B aggregator. Fast, reliable, no auth.
+              Endpoint: /v2/lat/{lat}/lon/{lon}/dist/{nm}
+    OpenSky:  Academic network. Slower, frequent timeouts on large AOIs.
+              Endpoint: /api/states/all?lamin=..&lamax=..&lomin=..&lomax=..
     """
-    url = "https://opensky-network.org/api/states/all"
-    params = {
-        "lamin": HORMUZ_BBOX["lamin"],
-        "lamax": HORMUZ_BBOX["lamax"],
-        "lomin": HORMUZ_BBOX["lomin"],
-        "lomax": HORMUZ_BBOX["lomax"],
-    }
+    errors = []
+
+    # --- PRIMARY: adsb.lol ---
     try:
-        resp = requests.get(url, params=params, timeout=15)
-        if resp.status_code != 200:
-            return pd.DataFrame(), f"HTTP {resp.status_code}"
-        data = resp.json()
-        states = data.get("states", [])
-        if not states:
-            return pd.DataFrame(), "No aircraft in AOI"
-
-        # OpenSky state vector columns:
-        # 0:icao24, 1:callsign, 2:origin_country, 3:time_position, 4:last_contact,
-        # 5:longitude, 6:latitude, 7:baro_altitude, 8:on_ground, 9:velocity,
-        # 10:true_track, 11:vertical_rate, 12:sensors, 13:geo_altitude,
-        # 14:squawk, 15:spi, 16:position_source, 17:category
-        rows = []
-        for s in states:
-            if s[5] is not None and s[6] is not None:
-                rows.append({
-                    "icao24": s[0],
-                    "callsign": (s[1] or "").strip(),
-                    "origin": s[2] or "",
-                    "lon": s[5],
-                    "lat": s[6],
-                    "alt_m": s[7] if s[7] is not None else 0,
-                    "on_ground": s[8],
-                    "velocity_ms": s[9] if s[9] is not None else 0,
-                    "heading": s[10] if s[10] is not None else 0,
-                    "vert_rate": s[11] if s[11] is not None else 0,
-                })
-        df = pd.DataFrame(rows)
-        ts = data.get("time", 0)
-        return df, f"{len(df)} aircraft | {datetime.utcfromtimestamp(ts).strftime('%H:%M:%SZ')}"
+        url = (
+            f"https://api.adsb.lol/v2/lat/{HORMUZ_CENTER['lat']}"
+            f"/lon/{HORMUZ_CENTER['lon']}/dist/{HORMUZ_RADIUS_NM}"
+        )
+        resp = requests.get(url, timeout=8, headers={"Accept": "application/json"})
+        if resp.status_code == 200:
+            data = resp.json()
+            df = _parse_adsb_lol(data)
+            if not df.empty:
+                now_str = datetime.utcnow().strftime("%H:%M:%SZ")
+                return df, f"{len(df)} aircraft | {now_str}", "adsb.lol"
+            errors.append("adsb.lol: 0 aircraft in AOI")
+        else:
+            errors.append(f"adsb.lol: HTTP {resp.status_code}")
     except requests.exceptions.Timeout:
-        return pd.DataFrame(), "Timeout (OpenSky may be slow)"
+        errors.append("adsb.lol: timeout")
     except Exception as e:
-        return pd.DataFrame(), f"Error: {e}"
+        errors.append(f"adsb.lol: {e}")
+
+    # --- FALLBACK: OpenSky Network ---
+    try:
+        url = "https://opensky-network.org/api/states/all"
+        params = {"lamin": 23.0, "lamax": 28.5, "lomin": 51.0, "lomax": 59.0}
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            df = _parse_opensky(data)
+            if not df.empty:
+                ts = data.get("time", 0)
+                ts_str = datetime.utcfromtimestamp(ts).strftime("%H:%M:%SZ") if ts else "?"
+                return df, f"{len(df)} aircraft | {ts_str}", "OpenSky"
+            errors.append("OpenSky: 0 aircraft in AOI")
+        else:
+            errors.append(f"OpenSky: HTTP {resp.status_code}")
+    except requests.exceptions.Timeout:
+        errors.append("OpenSky: timeout")
+    except Exception as e:
+        errors.append(f"OpenSky: {e}")
+
+    return pd.DataFrame(), " | ".join(errors), "FAILED"
 
 
-def build_adsb_map(df):
+def build_adsb_map(df, source_name=""):
     """Builds a Plotly scattermapbox of live aircraft positions."""
     if df.empty:
         return None
 
-    df["alt_ft"] = (df["alt_m"] * 3.281).astype(int)
-    df["speed_kts"] = (df["velocity_ms"] * 1.944).astype(int)
+    df = df.copy()
+    df["alt_ft"] = df["alt_ft_raw"].astype(int)
+    df["speed_kts"] = df["speed_kts_raw"].astype(int)
+
     df["label"] = df.apply(
-        lambda r: f"{r['callsign'] or r['icao24']} | {r['origin']}<br>"
-                  f"ALT: {r['alt_ft']}ft | SPD: {r['speed_kts']}kts",
+        lambda r: (
+            f"{'<b>' + r['callsign'] + '</b>' if r['callsign'] else r['icao24']}"
+            f"{' [' + r['type'] + ']' if r['type'] else ''}"
+            f" | {r['origin']}<br>"
+            f"ALT: {r['alt_ft']:,}ft | SPD: {r['speed_kts']}kts | HDG: {int(r['heading'])}deg"
+        ),
         axis=1,
     )
 
-    # Color by altitude: low=cyan, mid=amber, high=red
+    # Color by altitude: ground=green, low=cyan, mid=amber, high=red
     alt_colors = []
-    for alt in df["alt_ft"]:
-        if alt < 5000:
+    for _, row in df.iterrows():
+        if row["on_ground"]:
+            alt_colors.append("#10b981")
+        elif row["alt_ft"] < 5000:
             alt_colors.append("#06b6d4")
-        elif alt < 20000:
+        elif row["alt_ft"] < 25000:
             alt_colors.append("#f59e0b")
         else:
             alt_colors.append("#ef4444")
@@ -422,16 +490,16 @@ def build_adsb_map(df):
         lat=df["lat"],
         lon=df["lon"],
         mode="markers+text",
-        marker=dict(size=8, color=alt_colors, opacity=0.9),
+        marker=dict(size=7, color=alt_colors, opacity=0.85),
         text=df["callsign"],
         textposition="top right",
-        textfont=dict(size=8, color="#94a3b8", family="Share Tech Mono"),
+        textfont=dict(size=7, color="#94a3b8", family="Share Tech Mono"),
         hovertext=df["label"],
         hoverinfo="text",
         name="Aircraft",
     ))
 
-    # Add Hormuz strait marker
+    # Hormuz strait chokepoint marker
     fig.add_trace(go.Scattermapbox(
         lat=[26.57], lon=[56.25],
         mode="markers+text",
@@ -439,7 +507,7 @@ def build_adsb_map(df):
         text=["HORMUZ"],
         textposition="bottom center",
         textfont=dict(size=10, color="#ef4444", family="Share Tech Mono"),
-        hovertext=["Strait of Hormuz - Critical Chokepoint"],
+        hovertext=["Strait of Hormuz - Critical Chokepoint<br>~21% of global oil transit"],
         hoverinfo="text",
         name="Chokepoint",
     ))
@@ -447,8 +515,8 @@ def build_adsb_map(df):
     fig.update_layout(
         mapbox=dict(
             style="carto-darkmatter",
-            center=dict(lat=26.0, lon=55.5),
-            zoom=5.5,
+            center=dict(lat=HORMUZ_CENTER["lat"], lon=HORMUZ_CENTER["lon"]),
+            zoom=5.2,
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -1305,30 +1373,31 @@ elif menu.startswith("2"):
             "<div class='panel-title' style='color:var(--cyan);'>LIVE ADS-B FLIGHT RADAR (PERSIAN GULF)</div>",
             unsafe_allow_html=True,
         )
-        adsb_df, adsb_status = fetch_opensky_adsb()
+        adsb_df, adsb_status, adsb_source = fetch_adsb_data()
 
         if not adsb_df.empty:
-            fig_adsb = build_adsb_map(adsb_df)
+            fig_adsb = build_adsb_map(adsb_df, adsb_source)
             if fig_adsb:
                 st.plotly_chart(fig_adsb, use_container_width=True)
+            src_cls = "src-yf" if adsb_source == "adsb.lol" else "src-fred" if adsb_source == "OpenSky" else "src-fail"
             st.markdown(
                 f"<div style='font-family: monospace; font-size: 10px; color: #64748b; text-align: right;'>"
-                f"DATA: OPENSKY NETWORK LIVE ADS-B | {adsb_status} | "
+                f"DATA: <span class='source-tag {src_cls}'>{adsb_source.upper()}</span> LIVE ADS-B | {adsb_status} | "
+                f"<span style='color:#10b981;'>GND</span> "
                 f"<span style='color:#06b6d4;'>LOW</span> "
                 f"<span style='color:#f59e0b;'>MED</span> "
                 f"<span style='color:#ef4444;'>HIGH</span> ALT</div>",
                 unsafe_allow_html=True,
             )
         else:
-            # Fallback: show status and a static reference map
             st.markdown(
                 f"<div class='tac-panel alert-warn' style='height:460px; display:flex; flex-direction:column; justify-content:center; align-items:center;'>"
                 f"<div class='panel-title'>ADS-B FEED STATUS</div>"
                 f"<div class='mono-text' style='color:var(--amber); font-size:14px; margin-top:10px;'>{adsb_status}</div>"
                 f"<div class='mono-text' style='color:#64748b; font-size:11px; margin-top:15px; text-align:center; line-height:1.6;'>"
-                f"OpenSky Network may be temporarily unavailable.<br>"
-                f"Data refreshes every 60 seconds automatically.<br>"
-                f"Anonymous access: 10 req/min rate limit.</div></div>",
+                f"Both adsb.lol and OpenSky Network failed.<br>"
+                f"Data refreshes every 45 seconds automatically.<br>"
+                f"This is usually transient -- wait for next cycle.</div></div>",
                 unsafe_allow_html=True,
             )
 
