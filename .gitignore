@@ -13,7 +13,7 @@ venv/
 env/
 ENV/
 
-# Streamlit — keep config.toml in git, but never commit secrets
+# Streamlit -- keep config.toml in git, but never commit secrets
 .streamlit/secrets.toml
 
 # Local development settings
